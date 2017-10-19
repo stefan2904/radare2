@@ -5,11 +5,11 @@
 -L: List of supported IO plugins
 -q: Exit after processing commands
 -w: Write mode enabled
--i: Interprets a r2 script
+-i [file]: Interprets a r2 script
 -A: Analyze executable at load time (xrefs, etc)
 -n: Bare load. Do not load executable info as the entrypoint
--c'cmds': Run r2 and execute commands (eg: r2 -wqc'wx 3c @ main')
--p: Creates a project for the file being analyzed (CC add a comment when opening a file as a project)
+-c 'cmds': Run r2 and execute commands (eg: r2 -wqc'wx 3c @ main')
+-p [prj]: Creates a project for the file being analyzed (CC add a comment when opening a file as a project)
 -: Opens r2 with the malloc plugin that gives a 512 bytes memory area to play with (size can be changed)
 	Similar to r2 malloc://512
 ```
@@ -34,9 +34,6 @@ e asm.cmtright=true
 
 # Shows pseudocode in disassembly. Eg mov eax, str.ok = > eax = str.ok
 e asm.pseudo = true
-
-# Display stack and register values on top of disasembly view (visual mode)
-e cmd.stack = true
 
 # Solarized theme
 eco solarized
@@ -102,7 +99,7 @@ Note: | and & need to be escaped
 ?v 0x4141414a - 0x41414140  = 0xa
 ```
 * `?l str`: Returns the length of string
-* `@@`: Used for iteractions
+* `@@`: Used for iterations
 ```
 wx ff @@10 20 30      Writes ff at offsets 10, 20 and 30
 wx ff @@`?s  1 10 2`  Writes ff at offsets 1, 2 and 3
@@ -240,7 +237,7 @@ wf file: Writes the content of the file at the current address or specified offs
 wF file: Writes the content of the file at the current address or specified offset
 wt file [sz]: Write to file (from current seek, blocksize or sz bytes)
 	Eg: Dump ELF files with wt @@ hit0* (after searching for ELF headers: \x7fELF)
-woO 41424344 : get the index in the De Bruijn Pattern of the given word
+wopO 41424344 : get the index in the De Bruijn Pattern of the given word
 ```
 
 ## Flags
@@ -249,7 +246,7 @@ Flags are labels for offsets. They can be grouped in namespaces as `sym` for sym
 f: List flags
 f label @ offset: Define a flag `label` at offset
 	f str.pass_len @ 0x804999c
-f -label: Removes flag
+f-label: Removes flag
 fr: Rename flag
 fd: Returns position from nearest flag (looking backwards). Eg => entry+21
 fs: Show all flag spaces
@@ -432,7 +429,7 @@ Basic block graphs
 ```
 af: Load function metadata
 ag $$ > a.dot: Dump basic block graph to file
-ag $$ | xdot: Show current function basic block graph
+ag $$ | xdot -: Show current function basic block graph
 ```
 Call graphs
 
@@ -529,11 +526,9 @@ All suite commands include a `-r` flag to generate instructions for r2
 ## rax2 - Base conversion
 ```
 -e: Change endian
--k: random ASCII art to represent a number/hash. Similar to how SSH represents keys
--s: ASCII to hex
-	rax2 -S hola (from string to hex)
-	rax2 -s 686f6c61 (from hex to string)
--S: binary to hex (for files)
+-K: random ASCII art to represent a number/hash. Similar to how SSH represents keys
+-s: hexstr -> raw
+-S: raw -> hexstr
 ```
 
 ## rahash2 - Entropy, hashes and checksums
@@ -572,7 +567,7 @@ Show differences between original and patched on x86_32
 -D:	Disassemble showing hexpair and opcode
 	rasm2 -D b81e0000 => 0x00000000   5               b81e000000  mov eax, 0x1e
 -f: Read data from file instead of ARG.
--t: Write data to file
+-O filename: Write data to file
 ```
 
 ## rafind2 - Search
@@ -599,7 +594,7 @@ Generate a x86, 32 bits exec shellcode
 ## rabin2 - Executable analysis: symbols, imports, strings ...
 ```
 -I: Executable information
--C: Returns classes. Useful to list Java Classes
+-c: Returns classes. Useful to list Java Classes
 -l: Dynamic linked libraries
 -s: Symbols
 -z: Strings

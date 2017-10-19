@@ -47,10 +47,13 @@ R_API void r_bin_filter_name(Sdb *db, ut64 vaddr, char *name, int maxlen) {
 }
 
 R_API void r_bin_filter_sym(Sdb *db, ut64 vaddr, RBinSymbol *sym) {
-	char *name;
-	if (!db || !sym) return;
-	name = sym->name;
-	if (!name) return;
+	if (!db || !sym) {
+		return;
+	}
+	char *name = sym->name;
+	if (!name) {
+		return;
+	}
 	const char *uname = sdb_fmt (0, "%" PFMT64x ".%s", vaddr, name);
 	ut32 vhash = sdb_hash (uname); // vaddr hash - unique
 	ut32 hash = sdb_hash (name);   // name hash - if dupped and not in unique hash must insert
@@ -63,25 +66,26 @@ R_API void r_bin_filter_sym(Sdb *db, ut64 vaddr, RBinSymbol *sym) {
 	if (vaddr) {
 		//hashify (name, vaddr);
 	}
-	if (count > 1) {
-		char *nstr = r_str_newf ("%s_%d", sym->name, count - 1);
-		free (sym->name);
-		sym->name = nstr;
-	}
+	sym->dup_count = count - 1;
 }
 
 R_API void r_bin_filter_symbols(RList *list) {
+	RListIter *iter;
 	RBinSymbol *sym;
 	const int maxlen = sizeof (sym->name) - 8;
 	Sdb *db = sdb_new0 ();
-	RListIter *iter, *iter2;
+	if (!db) {
+		return;
+	}
 	if (maxlen > 0) {
-		r_list_foreach_safe (list, iter, iter2, sym) {
-			r_bin_filter_name (db, sym->vaddr, sym->name, maxlen);
+		r_list_foreach (list, iter, sym) {
+			if (sym && sym->name) {
+				r_bin_filter_name (db, sym->vaddr, sym->name, maxlen);
+			}
 		}
 	} else {
-		r_list_foreach_safe (list, iter, iter2, sym) {
-			if (sym->name) {
+		r_list_foreach (list, iter, sym) {
+			if (sym && sym->name) {
 				r_bin_filter_sym (db, sym->vaddr, sym);
 			}
 		}

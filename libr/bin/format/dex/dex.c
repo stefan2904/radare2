@@ -1,16 +1,8 @@
-/* radare - LGPL - Copyright 2009-2016 - pancake */
+/* radare - LGPL - Copyright 2009-2017 - pancake, h4ng3r */
 
 #include <r_types.h>
 #include <r_util.h>
 #include "dex.h"
-
-#define DEBUG_PRINTF 0
-
-#if DEBUG_PRINTF
-#define dprintf eprintf
-#else
-#define dprintf if (0)eprintf
-#endif
 
 char* r_bin_dex_get_version(RBinDexObj *bin) {
 	if (bin) {
@@ -36,11 +28,16 @@ RBinDexObj *r_bin_dex_new_buf(RBuffer *buf) {
 		goto fail;
 	}
 	/* header */
-	if (bin->size < sizeof(struct dex_header_t)) {
+	if (bin->size < sizeof (struct dex_header_t)) {
 		goto fail;
 	}
 	bufptr = bin->b->buf;
 	dexhdr = &bin->header;
+
+	//check boundaries of bufptr
+	if (bin->size < 112) {
+		goto fail;
+	}
 
 	memcpy (&dexhdr->magic, bufptr, 8);
 	dexhdr->checksum = r_read_le32 (bufptr + 8);
@@ -48,6 +45,8 @@ RBinDexObj *r_bin_dex_new_buf(RBuffer *buf) {
 	dexhdr->size = r_read_le32 (bufptr + 32);
 	dexhdr->header_size = r_read_le32 (bufptr + 36);
 	dexhdr->endian = r_read_le32 (bufptr + 40);
+	// TODO: this offsets and size will be used for checking,
+	// so they should be checked. Check overlap, < 0, > bin.size
 	dexhdr->linksection_size = r_read_le32 (bufptr + 44);
 	dexhdr->linksection_offset = r_read_le32 (bufptr + 48);
 	dexhdr->map_offset = r_read_le32 (bufptr + 52);
@@ -66,33 +65,8 @@ RBinDexObj *r_bin_dex_new_buf(RBuffer *buf) {
 	dexhdr->data_size = r_read_le32 (bufptr + 104);
 	dexhdr->data_offset = r_read_le32 (bufptr + 108);
 
-#if DEBUG_PRINTF
-	dprintf ("DEX file header:\n");
-	dprintf ("magic               : 'dex\\n035\\0'\n");
-	dprintf ("checksum            : %x\n", dexhdr->checksum);
-	dprintf ("signature           : %02x%02x...%02x%02x\n", dexhdr->signature[0], dexhdr->signature[1], dexhdr->signature[18], dexhdr->signature[19]);
-	dprintf ("file_size           : %d\n", dexhdr->size);
-	dprintf ("header_size         : %d\n", dexhdr->header_size);
-	dprintf ("link_size           : %d\n", dexhdr->linksection_size);
-	dprintf ("link_off            : %d (0x%06x)\n", dexhdr->linksection_offset, dexhdr->linksection_offset);
-	dprintf ("string_ids_size     : %d\n", dexhdr->strings_size);
-	dprintf ("string_ids_off      : %d (0x%06x)\n", dexhdr->strings_offset, dexhdr->strings_offset);
-	dprintf ("type_ids_size       : %d\n", dexhdr->types_size);
-	dprintf ("type_ids_off        : %d (0x%06x)\n", dexhdr->types_offset, dexhdr->types_offset);
-	dprintf ("proto_ids_size       : %d\n", dexhdr->prototypes_size);
-	dprintf ("proto_ids_off        : %d (0x%06x)\n", dexhdr->prototypes_offset, dexhdr->prototypes_offset);
-	dprintf ("field_ids_size      : %d\n", dexhdr->fields_size);
-	dprintf ("field_ids_off       : %d (0x%06x)\n", dexhdr->fields_offset, dexhdr->fields_offset);
-	dprintf ("method_ids_size     : %d\n", dexhdr->method_size);
-	dprintf ("method_ids_off      : %d (0x%06x)\n", dexhdr->method_offset, dexhdr->method_offset);
-	dprintf ("class_defs_size     : %d\n", dexhdr->class_size);
-	dprintf ("class_defs_off      : %d (0x%06x)\n", dexhdr->class_offset, dexhdr->class_offset);
-	dprintf ("data_size           : %d\n", dexhdr->data_size);
-	dprintf ("data_off            : %d (0x%06x)\n\n", dexhdr->data_offset, dexhdr->data_offset);
-#endif
-
 	/* strings */
-	#define STRINGS_SIZE ((dexhdr->strings_size+1)*sizeof(ut32))
+	#define STRINGS_SIZE ((dexhdr->strings_size + 1) * sizeof (ut32))
 	bin->strings = (ut32 *) calloc (dexhdr->strings_size + 1, sizeof (ut32));
 	if (!bin->strings) {
 		goto fail;
@@ -103,20 +77,32 @@ RBinDexObj *r_bin_dex_new_buf(RBuffer *buf) {
 	}
 	for (i = 0; i < dexhdr->strings_size; i++) {
 		ut64 offset = dexhdr->strings_offset + i * sizeof (ut32);
+		//make sure we can read from bufptr without oob
+		if (offset + 4 > bin->size) {
+			free (bin->strings);
+			goto fail;
+		}
 		bin->strings[i] = r_read_le32 (bufptr + offset);
 	}
 	/* classes */
-	int classes_size = dexhdr->class_size * sizeof (struct dex_class_t);
+	// TODO: not sure about if that is needed
+	int classes_size = dexhdr->class_size * DEX_CLASS_SIZE;
 	if (dexhdr->class_offset + classes_size >= bin->size) {
 		classes_size = bin->size - dexhdr->class_offset;
 	}
-	if (classes_size<0) {
+	if (classes_size < 0) {
 		classes_size = 0;
 	}
-	dexhdr->class_size = classes_size / sizeof (struct dex_class_t);
-	bin->classes = (struct dex_class_t *) malloc (classes_size);
+
+	dexhdr->class_size = classes_size / DEX_CLASS_SIZE;
+	bin->classes = (struct dex_class_t *) calloc (dexhdr->class_size, sizeof (struct dex_class_t));
 	for (i = 0; i < dexhdr->class_size; i++) {
-		ut64 offset = dexhdr->class_offset + i * sizeof (struct dex_class_t);
+		ut64 offset = dexhdr->class_offset + i * DEX_CLASS_SIZE;
+		if (offset + 32 > bin->size) {
+			free (bin->strings);
+			free (bin->classes);
+			goto fail;
+		}
 		bin->classes[i].class_id = r_read_le32 (bufptr + offset + 0);
 		bin->classes[i].access_flags = r_read_le32 (bufptr + offset + 4);
 		bin->classes[i].super_class = r_read_le32 (bufptr + offset + 8);
@@ -136,9 +122,15 @@ RBinDexObj *r_bin_dex_new_buf(RBuffer *buf) {
 		methods_size = 0;
 	}
 	dexhdr->method_size = methods_size / sizeof (struct dex_method_t);
-	bin->methods = (struct dex_method_t *) calloc (methods_size, 1);
+	bin->methods = (struct dex_method_t *) calloc (methods_size + 1, 1);
 	for (i = 0; i < dexhdr->method_size; i++) {
 		ut64 offset = dexhdr->method_offset + i * sizeof (struct dex_method_t);
+		if (offset + 8 > bin->size) {
+			free (bin->strings);
+			free (bin->classes);
+			free (bin->methods);
+			goto fail;
+		}
 		bin->methods[i].class_id = r_read_le16 (bufptr + offset + 0);
 		bin->methods[i].proto_id = r_read_le16 (bufptr + offset + 2);
 		bin->methods[i].name_id = r_read_le32 (bufptr + offset + 4);
@@ -153,9 +145,16 @@ RBinDexObj *r_bin_dex_new_buf(RBuffer *buf) {
 		types_size = 0;
 	}
 	dexhdr->types_size = types_size / sizeof (struct dex_type_t);
-	bin->types = (struct dex_type_t *) calloc (types_size, 1);
+	bin->types = (struct dex_type_t *) calloc (types_size + 1, 1);
 	for (i = 0; i < dexhdr->types_size; i++) {
 		ut64 offset = dexhdr->types_offset + i * sizeof (struct dex_type_t);
+		if (offset + 4 > bin->size) {
+			free (bin->strings);
+			free (bin->classes);
+			free (bin->methods);
+			free (bin->types);
+			goto fail;
+		}
 		bin->types[i].descriptor_id = r_read_le32 (bufptr + offset);
 	}
 
@@ -168,9 +167,17 @@ RBinDexObj *r_bin_dex_new_buf(RBuffer *buf) {
 		fields_size = 0;
 	}
 	dexhdr->fields_size = fields_size / sizeof (struct dex_field_t);
-	bin->fields = (struct dex_field_t *) calloc (fields_size, 1);
+	bin->fields = (struct dex_field_t *) calloc (fields_size + 1, 1);
 	for (i = 0; i < dexhdr->fields_size; i++) {
 		ut64 offset = dexhdr->fields_offset + i * sizeof (struct dex_field_t);
+		if (offset + 8 > bin->size) {
+			free (bin->strings);
+			free (bin->classes);
+			free (bin->methods);
+			free (bin->types);
+			free (bin->fields);
+			goto fail;
+		}
 		bin->fields[i].class_id = r_read_le16 (bufptr + offset + 0);
 		bin->fields[i].type_id = r_read_le16 (bufptr + offset + 2);
 		bin->fields[i].name_id = r_read_le32 (bufptr + offset + 4);
@@ -181,13 +188,23 @@ RBinDexObj *r_bin_dex_new_buf(RBuffer *buf) {
 	if (dexhdr->prototypes_offset + protos_size >= bin->size) {
 		protos_size = bin->size - dexhdr->prototypes_offset;
 	}
-	if (protos_size < 0) {
-		protos_size = 0;
+	if (protos_size < 1) {
+		dexhdr->prototypes_size = 0;
+		return bin;
 	}
 	dexhdr->prototypes_size = protos_size / sizeof (struct dex_proto_t);
 	bin->protos = (struct dex_proto_t *) calloc (protos_size, 1);
 	for (i = 0; i < dexhdr->prototypes_size; i++) {
 		ut64 offset = dexhdr->prototypes_offset + i * sizeof (struct dex_proto_t);
+		if (offset + 12 > bin->size) {
+			free (bin->strings);
+			free (bin->classes);
+			free (bin->methods);
+			free (bin->types);
+			free (bin->fields);
+			free (bin->protos);
+			goto fail;
+		}
 		bin->protos[i].shorty_id = r_read_le32 (bufptr + offset + 0);
 		bin->protos[i].return_type_id = r_read_le32 (bufptr + offset + 4);
 		bin->protos[i].parameters_off = r_read_le32 (bufptr + offset + 8);
@@ -204,8 +221,11 @@ fail:
 }
 
 // Move to r_util ??
-int dex_read_uleb128 (const ut8 *ptr) {
-	ut8 len = dex_uleb128_len (ptr);
+int dex_read_uleb128(const ut8 *ptr, int size) {
+	ut8 len = dex_uleb128_len (ptr, size);
+	if (len > size) {
+		return 0;
+	}
 	const ut8 *in = ptr + len - 1;
 	ut32 result = 0;
 	ut8 shift = 0;
@@ -223,9 +243,9 @@ int dex_read_uleb128 (const ut8 *ptr) {
 }
 
 #define LEB_MAX_SIZE 6
-int dex_uleb128_len (const ut8 *ptr) {
+int dex_uleb128_len(const ut8 *ptr, int size) {
 	int i = 1, result = *(ptr++);
-	while (result > 0x7f && i <= LEB_MAX_SIZE) {
+	while (result > 0x7f && i <= LEB_MAX_SIZE && i < size) {
 		result = *(ptr++);
 		i++;
 	}
@@ -233,9 +253,12 @@ int dex_uleb128_len (const ut8 *ptr) {
 }
 
 #define SIG_EXTEND(X,Y) X = (X << Y) >> Y
-int dex_read_sleb128 (const char *ptr) {
+int dex_read_sleb128(const char *ptr, int size) {
 	int cur, result;
-	ut8 len = dex_uleb128_len ((const ut8*)ptr);
+	ut8 len = dex_uleb128_len ((const ut8*)ptr, size);
+	if (len > size) {
+		return 0;
+	}
 	ptr += len - 1;
 	result = *(ptr--);
 

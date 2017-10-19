@@ -5,6 +5,7 @@ os:
   - osx
 
 language: c
+dist: trusty
 
 compiler:
   - gcc
@@ -17,8 +18,13 @@ matrix:
 
 sudo: false
 
+env:
+  - CXX=g++-4.8
+
 addons:
   apt:
+    sources:
+      - ubuntu-toolchain-r-test
     packages:
       - dc
       - binutils
@@ -26,10 +32,16 @@ addons:
       - libcurl4-openssl-dev
       - libelf-dev
       - libdw-dev
+      - jq
+      - gcc-4.8
+      - g++-4.8
 
 cache:
   - ccache
   - apt
+
+before_script:
+  - rm -rf ~/.nvm && git clone https://github.com/creationix/nvm.git ~/.nvm && (cd ~/.nvm && git checkout `git describe --abbrev=0 --tags`) && source ~/.nvm/nvm.sh && nvm install 7
 
 script:
   - git clone --depth 1 `doc/repo REGRESSIONS`
@@ -47,7 +59,6 @@ script:
   - export NOREPORT=1
   - cd radare2-regressions
   - VERBOSE=1 make -k all
-  - make unit_tests
 
 notifications:
   irc: "chat.freenode.net#radare"

@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2015-2016 - pancake, alvaro_fe */
+/* radare - LGPL - Copyright 2015-2017 - pancake, alvaro_fe */
 
 #include <r_userconf.h>
 #if DEBUGGER
@@ -28,6 +28,40 @@ static task_t task_dbg = 0;
 #include "xnu_excthreads.c"
 #endif
 
+extern int proc_regionfilename(int pid, uint64_t address, void * buffer, uint32_t buffersize);
+
+#define MAX_MACH_HEADER_SIZE (64 * 1024)
+#define DYLD_INFO_COUNT 5
+#define DYLD_INFO_LEGACY_COUNT 1
+#define DYLD_INFO_32_COUNT 3
+#define DYLD_INFO_64_COUNT 5
+#define DYLD_IMAGE_INFO_32_SIZE 12
+#define DYLD_IMAGE_INFO_64_SIZE 24
+
+typedef struct {
+	ut32 version;
+	ut32 info_array_count;
+	ut32 info_array;
+} DyldAllImageInfos32;
+
+typedef struct {
+	ut32 image_load_address;
+	ut32 image_file_path;
+	ut32 image_file_mod_date;
+} DyldImageInfo32;
+
+typedef struct {
+	ut32 version;
+	ut32 info_array_count;
+	ut64 info_array;
+} DyldAllImageInfos64;
+
+typedef struct {
+	ut64 image_load_address;
+	ut64 image_file_path;
+	ut64 image_file_mod_date;
+} DyldImageInfo64;
+
 /* XXX: right now it just returns the first thread, not the one selected in dbg->tid */
 static thread_t getcurthread (RDebug *dbg) {
 	thread_array_t threads = NULL;
@@ -52,27 +86,26 @@ static thread_t getcurthread (RDebug *dbg) {
 
 static xnu_thread_t* get_xnu_thread(RDebug *dbg, int tid) {
 	RListIter *it = NULL;
-	if (!dbg)
+	if (!dbg || tid < 0) {
 		return NULL;
-	if (tid < 0)
-		return NULL;
+	}
 	if (!xnu_update_thread_list (dbg)) {
-		eprintf ("Failed to update thread_list xnu_reg_write\n");
+		eprintf ("Failed to update thread_list xnu_udpate_thread_list\n");
 		return NULL;
 	}
 	//TODO get the current thread
 	it = r_list_find (dbg->threads, (const void *)(size_t)&tid,
 			  (RListComparator)&thread_find);
-	if (it)
-		return (xnu_thread_t *)it->data;
-	tid = getcurthread (dbg);
-	it = r_list_find (dbg->threads, (const void *)(size_t)&tid,
+	if (!it) {
+		tid = getcurthread (dbg);
+		it = r_list_find (dbg->threads, (const void *)(size_t)&tid,
 			  (RListComparator)&thread_find);
-	if (it) {
-		return (xnu_thread_t *)it->data;
+		if (!it) {
+			eprintf ("Thread not found get_xnu_thread\n");
+			return NULL;
+		}
 	}
-	eprintf ("Thread not found get_xnu_thread\n");
-	return NULL;
+	return (xnu_thread_t *)it->data;
 }
 
 static task_t task_for_pid_workaround(int Pid) {
@@ -81,15 +114,14 @@ static task_t task_for_pid_workaround(int Pid) {
 	mach_port_t psDefault_control = 0;
 	task_array_t tasks = NULL;
 	mach_msg_type_number_t numTasks = 0;
-	kern_return_t kr;
 	int i;
-	if (Pid == -1)
+	if (Pid == -1) {
 		return 0;
-
-	kr = processor_set_default (myhost, &psDefault);
-	if (kr != KERN_SUCCESS)
+	}
+	kern_return_t kr = processor_set_default (myhost, &psDefault);
+	if (kr != KERN_SUCCESS) {
 		return 0;
-
+	}
 	kr = host_processor_set_priv (myhost, psDefault, &psDefault_control);
 	if (kr != KERN_SUCCESS) {
 		eprintf ("host_processor_set_priv failed with error 0x%x\n", kr);
@@ -103,16 +135,16 @@ static task_t task_for_pid_workaround(int Pid) {
 		eprintf ("processor_set_tasks failed with error %x\n", kr);
 		return 0;
 	}
-
 	/* kernel task */
 	if (Pid == 0) {
 		return tasks[0];
 	}
 	for (i = 0; i < numTasks; i++) {
-		int pid;
+		int pid = 0;
 		pid_for_task (i, &pid);
-		if (pid == Pid)
-			return (tasks[i]);
+		if (pid == Pid) {
+			return tasks[i];
+		}
 	}
 	return 0;
 }
@@ -175,6 +207,7 @@ int xnu_attach(RDebug *dbg, int pid) {
 		eprintf ("error setting up exception thread\n");
 		return -1;
 	}
+	xnu_stop (dbg, pid);
 	return pid;
 #endif
 }
@@ -195,6 +228,61 @@ int xnu_detach(RDebug *dbg, int pid) {
 	//we mark the task as not longer available since we deallocated the ref
 	task_dbg = 0;
 	r_list_free (dbg->threads);
+	dbg->threads = NULL;
+	return true;
+#endif
+}
+
+static int task_suspend_count(task_t task) {
+	kern_return_t kr;
+	struct task_basic_info info;
+	mach_msg_type_number_t count = TASK_BASIC_INFO_COUNT;
+	kr = task_info (task, TASK_BASIC_INFO, (task_info_t) &info, &count);
+	if (kr != KERN_SUCCESS) {
+		eprintf ("failed to get task info\n");
+		return -1;
+	}
+	return info.suspend_count;
+}
+
+int xnu_stop(RDebug *dbg, int pid) {
+#if XNU_USE_PTRACE
+	eprintf ("xnu_stop: not implemented\n");
+	return false;
+#else
+	kern_return_t kr;
+	task_t task;
+	int suspend_count;
+
+	task = pid_to_task (pid);
+	if (!task) {
+		return false;
+	}
+
+	suspend_count = task_suspend_count (task);
+	if (suspend_count == -1) {
+		return false;
+	}
+	if (suspend_count == 1) {
+		// Hopefully _we_ suspended it.
+		return true;
+	}
+	if (suspend_count > 1) {
+		// This is unexpected.
+		return false;
+	}
+
+	kr = task_suspend (task);
+	if (kr != KERN_SUCCESS) {
+		eprintf ("failed to suspend task\n");
+		return false;
+	}
+
+	suspend_count = task_suspend_count (task);
+	if (suspend_count != 1) {
+		// This is unexpected.
+		return false;
+	}
 	return true;
 #endif
 }
@@ -225,9 +313,13 @@ int xnu_continue(RDebug *dbg, int pid, int tid, int sig) {
 		}
 	}
 	kr = task_resume (task);
+#if 0
+// it fails because the process is in a syscall like read() waiting to finish
+// so it cant resume
 	if (kr != KERN_SUCCESS) {
 		eprintf ("Failed to resume task xnu_continue\n");
 	}
+#endif
 	return true;
 #endif
 }
@@ -267,9 +359,10 @@ int xnu_reg_write(RDebug *dbg, int type, const ut8 *buf, int size) {
 	}
 	switch (type) {
 	case R_REG_TYPE_DRX:
-#if __x86_64__ || __i386__
-		memcpy (&th->drx, buf, R_MIN (size, sizeof (th->drx)));
-
+#if __x86_64__
+		memcpy (&th->drx.uds.ds32, buf, R_MIN (size, sizeof (th->drx)));
+#elif __i386__
+		memcpy (&th->drx.uds.ds64, buf, R_MIN (size, sizeof (th->drx)));
 #elif __arm || __arm64 || __aarch64
 #if defined (ARM_DEBUG_STATE32) && (defined (__arm64__) || defined (__aarch64__))
 		memcpy (&th->debug.drx32, buf, R_MIN (size, sizeof (th->debug.drx32)));
@@ -431,7 +524,7 @@ RList *xnu_thread_list (RDebug *dbg, int pid, RList *list) {
 		thread->state_size = sizeof (thread->gpr);
 		memcpy (&state, &thread->gpr, sizeof (R_REG_T));
 		r_list_append (list, r_debug_pid_new (thread->name,
-			thread->port, 's', CPU_PC));
+			thread->port, getuid (), 's', CPU_PC));
 	}
 	return list;
 }
@@ -595,18 +688,18 @@ static void xnu_build_corefile_header (vm_offset_t header,
 #if __ppc64__ || __x86_64__
 	struct mach_header_64 *mh64;
 	mh64 = (struct mach_header_64 *)header;
-	mh64->magic	= MH_MAGIC_64;
+	mh64->magic = MH_MAGIC_64;
 	mh64->cputype = xnu_get_cpu_type (pid);
 	mh64->cpusubtype = xnu_get_cpu_subtype (); 
 	mh64->filetype = MH_CORE;
-	mh64->ncmds	= segment_count + thread_count;
+	mh64->ncmds = segment_count + thread_count;
 	mh64->sizeofcmds = command_size;
 	mh64->reserved = 0; // 8-byte alignment 
 #elif __i386__ || __ppc__ || __POWERPC__
 	struct mach_header *mh;
 	mh = (struct mach_header *)header;
 	mh->magic = MH_MAGIC;
-	mh->cputype	= xnu_get_cpu_type (pid);
+	mh->cputype = xnu_get_cpu_type (pid);
 	mh->cpusubtype = xnu_get_cpu_subtype ();
 	mh->filetype = MH_CORE;
 	mh->ncmds = segment_count + thread_count;
@@ -780,6 +873,25 @@ static void xnu_collect_thread_state (thread_t port, void *tirp) {
 
 #define CORE_ALL_SECT 0
 
+#include <sys/sysctl.h>
+
+static uid_t uidFromPid(pid_t pid) {
+	uid_t uid = -1;
+
+	struct kinfo_proc process;
+	size_t procBufferSize = sizeof (process);
+
+	// Compose search path for sysctl. Here you can specify PID directly.
+	int path[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+	const int pathLenth = (sizeof (path) / sizeof (int));
+	int sysctlResult = sysctl (path, pathLenth, &process, &procBufferSize, NULL, 0);
+	// If sysctl did not fail and process with PID available - take UID.
+	if ((sysctlResult == 0) && (procBufferSize != 0)) {
+		uid = process.kp_eproc.e_ucred.cr_uid;
+	}
+	return uid;
+}
+
 bool xnu_generate_corefile (RDebug *dbg, RBuffer *dest) {
 	int error = 0, i;
 	int tstate_size;
@@ -825,7 +937,9 @@ bool xnu_generate_corefile (RDebug *dbg, RBuffer *dest) {
 	xnu_build_corefile_header (header, segment_count,
 		r_list_length (threads_list), command_size, dbg->pid);
 
-	if (!dbg->maps) perror ("There are not loaded maps");
+	if (!dbg->maps) {
+		perror ("There are not loaded maps");
+	}
 	if (xnu_write_mem_maps_to_buffer (mem_maps_buffer, dbg->maps, round_page (header_size),
 		header, mach_header_sz, segment_command_sz, &hoffset) < 0) {
 		eprintf ("There was an error while writing the memory maps");
@@ -860,7 +974,7 @@ cleanup:
 }
 
 RDebugPid *xnu_get_pid (int pid) {
-	int psnamelen, foo, nargs, mib[3];
+	int psnamelen, foo, nargs, mib[3], uid;
 	size_t size, argmax = 4096;
 	char *curr_arg, *start_args, *iter_args, *end_args;
 	char *procargs = NULL;
@@ -875,6 +989,8 @@ RDebugPid *xnu_get_pid (int pid) {
 		return NULL;
 	}
 #endif
+	uid = uidFromPid (pid);
+
 	/* Allocate space for the arguments. */
 	procargs = (char *)malloc (argmax);
 	if (!procargs) {
@@ -905,7 +1021,7 @@ RDebugPid *xnu_get_pid (int pid) {
 
 	// copy the number of argument to nargs
 	memcpy (&nargs, procargs, sizeof (nargs));
-	iter_args =  procargs + sizeof (nargs);
+	iter_args = procargs + sizeof (nargs);
 	end_args = &procargs[size - 30]; // end of the argument space
 	if (iter_args >= end_args) {
 		eprintf ("getcmdargs(): argument length mismatch");
@@ -924,12 +1040,6 @@ RDebugPid *xnu_get_pid (int pid) {
 		free (procargs);
 		return NULL;
 	}
-	/* Iterate through the '\0'-terminated strings and add each string
-	 * to the Python List arglist as a Python string.
-	 * Stop when nargs strings have been extracted.  That should be all
-	 * the arguments.  The rest of the strings will be environment
-	 * strings for the command.
-	 */
 	curr_arg = iter_args;
 	start_args = iter_args; //reset start position to beginning of cmdline
 	foo = 1;
@@ -943,7 +1053,7 @@ RDebugPid *xnu_get_pid (int pid) {
 				foo = 0;
 			} else {
 				psname[psnamelen] = ' ';
-				memcpy (psname+psnamelen+1, curr_arg, alen+1);
+				memcpy (psname + psnamelen + 1, curr_arg, alen + 1);
 			}
 			psnamelen += alen;
 			//printf("arg[%i]: %s\n", iter_args, curr_arg);
@@ -965,7 +1075,7 @@ RDebugPid *xnu_get_pid (int pid) {
 		return NULL;
 	}
 #endif
-	return r_debug_pid_new (psname, pid, 's', 0); // XXX 's' ??, 0?? must set correct values
+	return r_debug_pid_new (psname, pid, uid, 's', 0); // XXX 's' ??, 0?? must set correct values
 }
 
 kern_return_t mach_vm_region_recurse (
@@ -1005,9 +1115,10 @@ vm_address_t get_kernel_base(task_t ___task) {
 	int count;
 
 	ret = task_for_pid (mach_task_self(), 0, &task);
-	if (ret != KERN_SUCCESS)
+	if (ret != KERN_SUCCESS) {
 		return 0;
-	eprintf ("%d vs %d\n", task, ___task);
+	}
+	// eprintf ("%d vs %d\n", task, ___task);
 	for (count = 128; count; count--) {
 		// get next memory region
 		naddr = addr;
@@ -1038,50 +1149,17 @@ vm_address_t get_kernel_base(task_t ___task) {
 	return (vm_address_t)0;
 }
 
-extern int proc_regionfilename(int pid, uint64_t address, void * buffer, uint32_t buffersize);
-
-#define MAX_MACH_HEADER_SIZE (64 * 1024)
-#define DYLD_INFO_COUNT 5
-#define DYLD_INFO_LEGACY_COUNT 1
-#define DYLD_INFO_32_COUNT 3
-#define DYLD_INFO_64_COUNT 5
-#define DYLD_IMAGE_INFO_32_SIZE 12
-#define DYLD_IMAGE_INFO_64_SIZE 24
-
-typedef struct {
-	ut32 version;
-	ut32 info_array_count;
-	ut32 info_array;
-} DyldAllImageInfos32;
-
-typedef struct {
-	ut32 image_load_address;
-	ut32 image_file_path;
-	ut32 image_file_mod_date;
-} DyldImageInfo32;
-
-typedef struct {
-	ut32 version;
-	ut32 info_array_count;
-	ut64 info_array;
-} DyldAllImageInfos64;
-
-typedef struct {
-	ut64 image_load_address;
-	ut64 image_file_path;
-	ut64 image_file_mod_date;
-} DyldImageInfo64;
-
 // TODO: Implement mach0 size.. maybe copypasta from rbin?
 static int mach0_size (RDebug *dbg, ut64 addr) {
 	return 4096;
 }
 
 static void xnu_map_free(RDebugMap *map) {
-	if (!map) return;
-	free (map->name);
-	free (map->file);
-	free (map);
+	if (map) {
+		free (map->name);
+		free (map->file);
+		free (map);
+	}
 }
 
 static RList *xnu_dbg_modules(RDebug *dbg) {
@@ -1102,12 +1180,15 @@ static RList *xnu_dbg_modules(RDebug *dbg) {
 	ut64 addr, file_path_address;
 	RDebugMap *mr = NULL;
 	RList *list = NULL;
-	if (!task)
+	if (!task) {
 		return NULL;
+	}
 
 	kr = task_info (task, TASK_DYLD_INFO, (task_info_t) &info, &count);
-	if (kr != KERN_SUCCESS)
+	if (kr != KERN_SUCCESS) {
+		r_list_free (list);
 		return NULL;
+	}
 
 	if (info.all_image_info_format == TASK_DYLD_ALL_IMAGE_INFO_64) {
 		DyldAllImageInfos64 all_infos;
@@ -1125,25 +1206,25 @@ static RList *xnu_dbg_modules(RDebug *dbg) {
 		info_array_address = all_info.info_array;
 	}
 
-	if (info_array_address == 0) return NULL;
-
-	info_array = malloc (info_array_size);
+	if (info_array_address == 0) {
+		return NULL;
+	}
+	info_array_size = R_ABS (info_array_size);
+	info_array = calloc (1, info_array_size);
 	if (!info_array) {
 		eprintf ("Cannot allocate info_array_size %d\n",
 			info_array_size);
 		return NULL;
 	}
 
-	dbg->iob.read_at (dbg->iob.io, info_array_address,
-			info_array, info_array_size);
+	dbg->iob.read_at (dbg->iob.io, info_array_address, info_array, info_array_size);
 
-	list = r_list_new ();
+	list = r_list_newf ((RListFree)xnu_map_free);
 	if (!list) {
 		free (info_array);
 		return NULL;
 	}
-	list->free = (RListFree)xnu_map_free;
-	for (i=0; i < info_array_count; i++) {
+	for (i = 0; i < info_array_count; i++) {
 		if (info.all_image_info_format == TASK_DYLD_ALL_IMAGE_INFO_64) {
 			DyldImageInfo64 * info = info_array + \
 						(i * DYLD_IMAGE_INFO_64_SIZE);
@@ -1165,11 +1246,43 @@ static RList *xnu_dbg_modules(RDebug *dbg) {
 			break;
 		}
 		mr->file = strdup (file_path);
+		mr->shared = true;
 		r_list_append (list, mr);
 	}
 	free (info_array);
 	return list;
 #endif
+}
+
+static RDebugMap *moduleAt(RList *list, ut64 addr) {
+	RListIter *iter;
+	RDebugMap *map;
+	r_list_foreach (list, iter, map) {
+		if (R_BETWEEN (map->addr, addr, map->addr_end)) {
+			return map;
+		}
+	}
+	return NULL;
+}
+
+static int cmp (const void *_a, const void *_b) {
+	const RDebugMap *a = _a;
+	const RDebugMap *b = _b;
+	if (a->addr > b->addr) return 1;
+	if (a->addr < b->addr) return -1;
+	return 0;
+}
+
+static RDebugMap *r_debug_map_clone (RDebugMap *m) {
+	RDebugMap *map = R_NEWCOPY (RDebugMap, m);
+	// memcpy (map, m, sizeof (RDebugMap));
+	if (m->name) {
+		map->name = strdup (m->name);
+	}
+	if (m->file) {
+		map->file = strdup (m->file);
+	}
+	return map;
 }
 
 RList *xnu_dbg_maps(RDebug *dbg, int only_modules) {
@@ -1185,16 +1298,17 @@ RList *xnu_dbg_maps(RDebug *dbg, int only_modules) {
 	int tid = dbg->pid;
 	task_t task = pid_to_task (tid);
 	RDebugMap *mr = NULL;
-	RList *list = NULL;
 	int i = 0;
+
 	if (!task) {
 		return NULL;
 	}
+	RList *modules = xnu_dbg_modules (dbg);
 	if (only_modules) {
-		return xnu_dbg_modules (dbg);
+		return modules;
 	}
 #if __arm64__ || __aarch64__
-	size = osize = 16384; // acording to frida
+	size = osize = 16384;
 #else
 	size = osize = 4096;
 #endif
@@ -1205,21 +1319,19 @@ RList *xnu_dbg_maps(RDebug *dbg, int only_modules) {
 		return NULL;
 	}
 #endif
-	list = r_list_new ();
-	if (!list) return NULL;
+	RList *list = r_list_new ();
+	if (!list) {
+		return NULL;
+	}
 	list->free = (RListFree)xnu_map_free;
-	kern_return_t kr;
 	for (;;) {
-		struct vm_region_submap_info_64 info;
-		mach_msg_type_number_t info_count;
-
-		info_count = VM_REGION_SUBMAP_INFO_COUNT_64;
-		memset (&info, 0, sizeof (info));
-		kr = mach_vm_region_recurse (task, &address, &size, &depth,
-					(vm_region_recurse_info_t) &info,
-					&info_count);
-
-		if (kr != KERN_SUCCESS) break;
+		struct vm_region_submap_info_64 info = {0};
+		mach_msg_type_number_t info_count = VM_REGION_SUBMAP_INFO_COUNT_64;
+		kern_return_t kr = mach_vm_region_recurse (task, &address, &size, &depth,
+					(vm_region_recurse_info_t) &info, &info_count);
+		if (kr != KERN_SUCCESS) {
+			break;
+		}
 		if (info.is_submap) {
 			depth++;
 			continue;
@@ -1235,16 +1347,18 @@ RList *xnu_dbg_maps(RDebug *dbg, int only_modules) {
 		if (true) {
 			char maxperm[32];
 			char depthstr[32];
-			if (depth>0)
+			if (depth > 0) {
 				snprintf (depthstr, sizeof (depthstr), "_%d", depth);
-			else
+			} else {
 				depthstr[0] = 0;
+			}
 
-			if (info.max_protection != info.protection)
+			if (info.max_protection != info.protection) {
 				strcpy (maxperm, r_str_rwx_i (xwr2rwx (
 					info.max_protection)));
-			else
+			} else {
 				maxperm[0] = 0;
+			}
 			// XXX: if its shared, it cannot be read?
 			snprintf (buf, sizeof (buf), "%02x_%s%s%s%s%s%s%s%s",
 				i, unparse_inheritance (info.inheritance),
@@ -1256,19 +1370,51 @@ RList *xnu_dbg_maps(RDebug *dbg, int only_modules) {
 				eprintf ("Cannot create r_debug_map_new\n");
 				break;
 			}
-			if (*module_name) {
-				mr->file = strdup (module_name);
+			RDebugMap *rdm = moduleAt (modules, address);
+			if (rdm) {
+				mr->file = strdup (rdm->name);
+			} else {
+				if (*module_name) {
+					mr->file = strdup (module_name);
+				}
+			}
+			if (mr->file) {
+				if (!strcmp (mr->file, mr->file)) {
+					mr->name[0] = 0;
+					const char *slash = r_str_lchr (mr->file, '/');
+					if (slash) {
+						strcpy (mr->name, slash + 1);
+					}
+				}
 			}
 			i++;
+			mr->shared = false;
 			r_list_append (list, mr);
 		}
 		if (size < 1) {
-			eprintf ("EFUCK\n");
-			size = osize; // fuck
+			eprintf ("size error\n");
+			size = osize;
 		}
 		address += size;
 		size = 0;
 	}
+	RListIter *iter;
+	RDebugMap *m;
+	r_list_foreach (modules, iter, m) {
+		RDebugMap *m2 = r_debug_map_clone (m);
+		if (m2->name && m2->file) {
+			if (!strcmp (m2->name, m2->file)) {
+				m2->name[0] = 0;
+				const char *slash = r_str_lchr (m2->file, '/');
+				if (slash) {
+					strcpy (m2->name, slash + 1);
+				}
+			}
+		}
+		r_list_append (list, m2);	
+	}
+	r_list_sort (list, cmp);
+ 	r_list_free (modules);
 	return list;
 }
 

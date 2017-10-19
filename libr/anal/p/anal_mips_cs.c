@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2013-2016 - pancake */
+/* radare2 - LGPL - Copyright 2013-2017 - pancake */
 
 #include <r_asm.h>
 #include <r_lib.h>
@@ -92,6 +92,44 @@
 			ARG(1), REG(0));\
 	}
 
+static void opex(RStrBuf *buf, csh handle, cs_insn *insn) {
+	int i;
+	r_strbuf_init (buf);
+	r_strbuf_append (buf, "{");
+	cs_mips *x = &insn->detail->mips;
+	r_strbuf_append (buf, "\"operands\":[");
+	for (i = 0; i < x->op_count; i++) {
+		cs_mips_op *op = &x->operands[i];
+		if (i > 0) {
+			r_strbuf_append (buf, ",");
+		}
+		r_strbuf_append (buf, "{");
+		switch (op->type) {
+		case MIPS_OP_REG:
+			r_strbuf_append (buf, "\"type\":\"reg\"");
+			r_strbuf_appendf (buf, ",\"value\":\"%s\"", cs_reg_name (handle, op->reg));
+			break;
+		case MIPS_OP_IMM:
+			r_strbuf_append (buf, "\"type\":\"imm\"");
+			r_strbuf_appendf (buf, ",\"value\":%"PFMT64d, op->imm);
+			break;
+		case MIPS_OP_MEM:
+			r_strbuf_append (buf, "\"type\":\"mem\"");
+			if (op->mem.base != MIPS_REG_INVALID) {
+				r_strbuf_appendf (buf, ",\"base\":\"%s\"", cs_reg_name (handle, op->mem.base));
+			}
+			r_strbuf_appendf (buf, ",\"disp\":%"PFMT64d"", op->mem.disp);
+			break;
+		default:
+			r_strbuf_append (buf, "\"type\":\"invalid\"");
+			break;
+		}
+		r_strbuf_append (buf, "}");
+	}
+	r_strbuf_append (buf, "]");
+	r_strbuf_append (buf, "}");
+}
+
 static const char *arg(csh *handle, cs_insn *insn, char *buf, int n) {
 	*buf = 0;
 	switch (insn->detail->mips.operands[n].type) {
@@ -133,13 +171,15 @@ static const char *arg(csh *handle, cs_insn *insn, char *buf, int n) {
 static int analop_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len, csh *handle, cs_insn *insn) {
 	char str[8][32];
 	int i;
+
 	r_strbuf_init (&op->esil);
 	r_strbuf_set (&op->esil, "");
 
 	if (insn) {
+		opex (&op->opex, *handle, insn);
 		// caching operands
-		for (i=0; i<insn->detail->mips.op_count && i<8; i++) {
-			*str[i]=0;
+		for (i = 0; i < insn->detail->mips.op_count && i < 8; i++) {
+			*str[i] = 0;
 			ARG (i);
 		}
 	}
@@ -150,7 +190,11 @@ static int analop_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len
 		r_strbuf_setf (&op->esil, ",");
 		break;
 	case MIPS_INS_BREAK:
-		r_strbuf_setf (&op->esil, "%s,%s,TRAP", ARG (0), ARG (0));
+		r_strbuf_setf (&op->esil, "%d,%d,TRAP", IMM (0), IMM (0));
+		break;
+	case MIPS_INS_SD:
+		r_strbuf_appendf (&op->esil, "%s,%s,=[8]",
+			ARG (0), ARG (1));
 		break;
 	case MIPS_INS_SW:
 	case MIPS_INS_SWL:
@@ -230,10 +274,12 @@ static int analop_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len
 		r_strbuf_appendf (&op->esil, ES_TRAP_DS () "," ES_J ("%s"), ARG (0));
 		break;
 	case MIPS_INS_BNE:  // bne $s, $t, offset
+	case MIPS_INS_BNEL:
 		r_strbuf_appendf (&op->esil, ES_TRAP_DS () ",%s,%s,==,$z,!,?{,"ES_J ("%s")",}",
 			ARG (0), ARG (1), ARG (2));
 		break;
 	case MIPS_INS_BEQ:
+	case MIPS_INS_BEQL:
 		r_strbuf_appendf (&op->esil, ES_TRAP_DS () ",%s,%s,==,$z,?{,"ES_J ("%s")",}",
 			ARG (0), ARG (1), ARG (2));
 		break;
@@ -253,6 +299,7 @@ static int analop_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len
 		break;
 	case MIPS_INS_BLEZ:
 	case MIPS_INS_BLEZC:
+	case MIPS_INS_BLEZL:
 		r_strbuf_appendf (&op->esil, ES_TRAP_DS () ",0,%s,==,$z,?{,"ES_J ("%s")",BREAK,},",
 			ARG (0), ARG (1));
 		r_strbuf_appendf (&op->esil, ES_TRAP_DS () ",1,"ES_IS_NEGATIVE ("%s")",==,$z,?{,"ES_J ("%s")",}",
@@ -260,6 +307,7 @@ static int analop_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len
 		break;
 	case MIPS_INS_BGEZ:
 	case MIPS_INS_BGEZC:
+	case MIPS_INS_BGEZL:
 		r_strbuf_appendf (&op->esil, ES_TRAP_DS () ",0,"ES_IS_NEGATIVE ("%s")",==,$z,?{,"ES_J ("%s")",}",
 			ARG (0), ARG (1));
 		break;
@@ -281,11 +329,13 @@ static int analop_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len
 		break;
 	case MIPS_INS_BLTZ:
 	case MIPS_INS_BLTZC:
+	case MIPS_INS_BLTZL:
 		r_strbuf_appendf (&op->esil, ES_TRAP_DS () ",1,"ES_IS_NEGATIVE ("%s")",==,$z,?{,"ES_J ("%s")",}",
 			ARG (0), ARG (1));
 		break;
 	case MIPS_INS_BGTZ:
 	case MIPS_INS_BGTZC:
+	case MIPS_INS_BGTZL:
 		r_strbuf_appendf (&op->esil, ES_TRAP_DS () ",0,%s,==,$z,?{,BREAK,},", ARG (0));
 		r_strbuf_appendf (&op->esil, ES_TRAP_DS () ",0,"ES_IS_NEGATIVE ("%s")",==,$z,?{,"ES_J("%s")",}",
 			ARG (0), ARG (1));
@@ -373,6 +423,7 @@ static int analop_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len
 		}
 		break;
 	case MIPS_INS_LI:
+	case MIPS_INS_LDI:
 		r_strbuf_appendf (&op->esil, "0x%"PFMT64x",%s,=", IMM(1), ARG(0));
 		break;
 	case MIPS_INS_LUI:
@@ -390,13 +441,15 @@ static int analop_esil(RAnal *a, RAnalOp *op, ut64 addr, const ut8 *buf, int len
 	case MIPS_INS_LWR:
 	case MIPS_INS_LWU:
 	case MIPS_INS_LL:
-	case MIPS_INS_LLD:
-	case MIPS_INS_LD:
-	case MIPS_INS_LDI:
+		ESIL_LOAD ("4");
+		break;
+
 	case MIPS_INS_LDL:
 	case MIPS_INS_LDC1:
 	case MIPS_INS_LDC2:
-		ESIL_LOAD ("4");
+	case MIPS_INS_LLD:
+	case MIPS_INS_LD:
+		ESIL_LOAD ("8");
 		break;
 
 	case MIPS_INS_LWX:
@@ -534,7 +587,20 @@ static int analop(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *buf, int len) 
 	cs_insn* insn;
 	int mode = anal->big_endian? CS_MODE_BIG_ENDIAN: CS_MODE_LITTLE_ENDIAN;
 
-	mode |= (anal->bits==64)? CS_MODE_64: CS_MODE_32;
+	if (anal->cpu && *anal->cpu) {
+		if (!strcmp (anal->cpu, "micro")) {
+			mode |= CS_MODE_MICRO;
+		} else if (!strcmp (anal->cpu, "r6")) {
+			mode |= CS_MODE_MIPS32R6;
+		} else if (!strcmp (anal->cpu, "v3")) {
+			mode |= CS_MODE_MIPS3;
+		} else if (!strcmp (anal->cpu, "v2")) {
+#if CS_API_MAJOR > 3
+			mode |= CS_MODE_MIPS2;
+#endif
+		}
+	}
+	mode |= (anal->bits==64)? CS_MODE_MIPS64: CS_MODE_MIPS32;
 	if (mode != omode || anal->bits != obits) {
 		cs_close (&hndl);
 		hndl = 0;
@@ -559,6 +625,7 @@ static int analop(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *buf, int len) 
 	op->delay = 0;
 	op->jump = UT64_MAX;
 	op->fail = UT64_MAX;
+	op->id = insn->id;
 	opsize = op->size = insn->size;
 	switch (insn->id) {
 	case MIPS_INS_INVALID:
@@ -599,7 +666,10 @@ static int analop(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *buf, int len) 
 		}
 		// TODO: fill
 		break;
+	case MIPS_INS_SD:
 	case MIPS_INS_SW:
+	case MIPS_INS_SB:
+	case MIPS_INS_SH:
 	case MIPS_INS_SWC1:
 	case MIPS_INS_SWC2:
 	case MIPS_INS_SWL:
@@ -747,6 +817,8 @@ static int analop(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *buf, int len) 
 	case MIPS_INS_BEQ:
 	case MIPS_INS_BNZ:
 	case MIPS_INS_BNE:
+	case MIPS_INS_BNEL:
+	case MIPS_INS_BEQL:
 	case MIPS_INS_BEQZ:
 	case MIPS_INS_BNEG:
 	case MIPS_INS_BNEGI:
@@ -784,7 +856,7 @@ static int analop(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *buf, int len) 
 		case MIPS_INS_BGEZC:
 		case MIPS_INS_BLTZC:
 		case MIPS_INS_BGTZC:
-			// compact vesions (no delay)
+			// compact versions (no delay)
 			op->delay = 0;
 			op->fail = addr+4;
 			break;

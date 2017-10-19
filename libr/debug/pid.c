@@ -1,12 +1,15 @@
-/* radare - LGPL - Copyright 2009-2011 pancake<nopcode.org> */
+/* radare - LGPL - Copyright 2009-2017 - pancake */
 
 #include <r_debug.h>
 
-R_API RDebugPid *r_debug_pid_new(const char *path, int pid, char status, ut64 pc) {
+R_API RDebugPid *r_debug_pid_new(const char *path, int pid, int uid, char status, ut64 pc) {
 	RDebugPid *p = R_NEW0 (RDebugPid);
-	if (!p) return NULL;
+	if (!p) {
+		return NULL;
+	}
 	p->path = strdup (path);
 	p->pid = pid;
+	p->uid = uid;
 	p->status = status;
 	p->runnable = true;
 	p->pc = pc;
@@ -20,8 +23,9 @@ R_API RDebugPid *r_debug_pid_free(RDebugPid *pid) {
 }
 
 R_API RList *r_debug_pids(RDebug *dbg, int pid) {
-	if (dbg && dbg->h && dbg->h->pids)
-		return dbg->h->pids (pid);
+	if (dbg && dbg->h && dbg->h->pids) {
+		return dbg->h->pids (dbg, pid);
+	}
 	return NULL;
 }
 
@@ -31,29 +35,33 @@ R_API int r_debug_pid_list(RDebug *dbg, int pid, char fmt) {
 	RListIter *iter;
 	RDebugPid *p;
 	if (dbg && dbg->h && dbg->h->pids) {
-		list = dbg->h->pids (R_MAX (0, pid));
-		if (!list)
+		list = dbg->h->pids (dbg, R_MAX (0, pid));
+		if (!list) {
 			return false;
-		if (fmt == 'j')
+		}
+		if (fmt == 'j') {
 			dbg->cb_printf ("[");
+		}
 		r_list_foreach (list, iter, p) {
 			switch (fmt) {
 			case 'j':
 				dbg->cb_printf ("{\"pid\":%d,"
+					"\"uid\":%d,"
 					"\"status\":\"%c\","
 					"\"path\":\"%s\"}%s",
-					p->pid, p->status, p->path,
+					p->pid, p->uid, p->status, p->path,
 					iter->n?",":"");
 				break;
 			default:
-				dbg->cb_printf (" %c %d %c %s\n",
-					dbg->pid==p->pid?'*':'-',
-					p->pid, p->status, p->path);
+				dbg->cb_printf (" %c %d uid:%d %c %s\n",
+					dbg->pid == p->pid? '*': '-',
+					p->pid, p->uid, p->status, p->path);
 				break;
 			}
 		}
-		if (fmt == 'j')
+		if (fmt == 'j') {
 			dbg->cb_printf ("]\n");
+		}
 		r_list_free (list);
 	}
 	return false;

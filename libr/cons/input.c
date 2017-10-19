@@ -97,10 +97,13 @@ R_API int r_cons_arrow_to_hjkl(int ch) {
 	case 0x06: ch='l'; break; // emacs right (ctrl + f)
 	case 0x02: ch='h'; break; // emacs left (ctrl + b)
 	}
-	if (ch != 0x1b)
+	if (ch != 0x1b) {
 		return ch;
+	}
 	ch = r_cons_readchar ();
-	if (!ch) return 0;
+	if (!ch) {
+		return 0;
+	}
 	switch (ch) {
 	case 0x1b:
 		ch = 'q'; // XXX: must be 0x1b (R_CONS_KEY_ESC)
@@ -223,6 +226,8 @@ R_API int r_cons_fgets(char *buf, int len, int argc, const char **argv) {
 	if (cons->user_fgets) {
 		RETURN (cons->user_fgets (buf, len));
 	}
+	printf ("%s", cons->line->prompt);
+	fflush (stdout);
 	*buf = '\0';
 	fflush (cons->fdin);
 	if (color) {
@@ -240,7 +245,9 @@ R_API int r_cons_fgets(char *buf, int len, int argc, const char **argv) {
 		RETURN (-1);
 	}
 	if (feof (cons->fdin)) {
-		if (color) printf (Color_RESET);
+		if (color) {
+			printf (Color_RESET);
+		}
 		RETURN (-2);
 	}
 	buf[strlen (buf)-1] = '\0';
@@ -275,7 +282,6 @@ static int readchar_win() {
 	DWORD mode, out;
 	HANDLE h;
 	INPUT_RECORD irInBuf[128];
-	int dir;
 	int i;
 do_it_again:
 	h = GetStdHandle (STD_INPUT_HANDLE);
@@ -444,7 +450,6 @@ R_API int r_cons_readchar() {
 	HANDLE h = GetStdHandle (STD_INPUT_HANDLE);
 	GetConsoleMode (h, &mode);
 	SetConsoleMode (h, 0); // RAW
-ignore:
 	ret = ReadConsole (h, buf, 1, &out, NULL);
 	FlushConsoleInputBuffer(h);
 	if (!ret)
@@ -481,7 +486,9 @@ R_API int r_cons_yesno(int def, const char *fmt, ...) {
 
 R_API char *r_cons_input(const char *msg) {
 	char *oprompt = r_line_get_prompt (); //r_cons_singleton()->line->prompt);
-	if (!oprompt) return NULL;
+	if (!oprompt) {
+		return NULL;
+	}
 	char buf[1024];
 	if (msg) {
 		//r_cons_printf ("%s\n", msg);

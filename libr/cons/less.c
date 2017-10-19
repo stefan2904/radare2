@@ -27,7 +27,7 @@ static void color_line(const char *line, RStrpool *p, RList *ml){
 		m_addr = r_str_ndup (line + m->rm_so, m_len);
 		if (m_addr) {
 			/* in case there's a CSI in the middle of this match*/
-			m_len = r_str_ansi_filter(m_addr, NULL, NULL, m_len);
+			m_len = r_str_ansi_filter (m_addr, NULL, NULL, m_len);
 			if (m_len<0) m_len = 0;
 			r_strpool_memcat (p, m_addr, m_len);
 			r_strpool_memcat (p, inv[1], linv[1]);
@@ -42,14 +42,16 @@ static void color_line(const char *line, RStrpool *p, RList *ml){
 
 static void printpage (const char *line, int *index, RList **mla, int from, int to, int w) {
 	int i;
-	RStrpool *p;
 
 	r_cons_clear00 ();
 	if (from < 0 || to < 0) {
 		return;
 	}
-	p = r_strpool_new (0);
-	if (!p) return;
+
+	RStrpool *p = r_strpool_new (0);
+	if (!p) {
+		return;
+	}
 	for (i = from; i < to; i++) {
 		color_line (line + index[i], p, mla[i]);
 		r_strpool_ansi_chop (p, w);
@@ -149,6 +151,7 @@ R_API int r_cons_less_str(const char *str, const char *exitkeys) {
 		" jk       - line down/up\n"
 		" gG       - begin/end buffer\n"
 		" /        - search in buffer\n"
+		" _        - enter the hud mode\n"
 		" n/p      - next/prev search result\n"
 		" q        - quit\n"
 		" ?        - show this help\n"
@@ -159,16 +162,27 @@ R_API int r_cons_less_str(const char *str, const char *exitkeys) {
 	const char *sreg;
 	RList **mla;
 
-	if (!str || !*str) return 0;
+	if (!str || !*str) {
+		return 0;
+	}
+	// rcons kills str after flushing the buffer, so we must keep a copy
+	char *ostr = strdup (str);
+	if (!ostr) {
+		return 0;
+	}
 	char *p = strdup (str);
-	if (!p) return 0;
+	if (!p) {
+		free (ostr);
+		return 0;
+	}
 	int *lines = splitlines (p, &lines_count);
-	if (lines_count<1) {
+	if (lines_count < 1) {
 		mla = NULL;
 	} else {
 		mla = calloc (lines_count, sizeof (RList *));
 		if (!mla) {
 			free (p);
+			free (ostr);
 			free (lines);
 			return 0;
 		}
@@ -183,22 +197,29 @@ R_API int r_cons_less_str(const char *str, const char *exitkeys) {
 	while (ui) {
 		w = r_cons_get_size (&h);
 		to = R_MIN (lines_count, from + h - 1);
-		if (from+3>lines_count)
+		if (from + 3 > lines_count) {
 			from = lines_count - 3;
-		if (from<0) from = 0;
+		}
+		if (from < 0) {
+			from = 0;
+		}
 		printpage (p, lines, mla, from, to, w);
 		ch = r_cons_readchar ();
 		if (exitkeys && strchr (exitkeys, ch)) {
 			for (i = 0; i < lines_count; i++) {
 				r_list_free (mla[i]);
 			}
-			free (mla);
 			free (p);
+			free (mla);
+			free (ostr);
 			free (lines);
 			return ch;
 		}
 		ch = r_cons_arrow_to_hjkl (ch);
 		switch (ch) {
+		case '_':
+			r_cons_hud_string (ostr);
+			break;
 		case '?':
 			if (!in_help) {
 				in_help = true;
@@ -208,7 +229,9 @@ R_API int r_cons_less_str(const char *str, const char *exitkeys) {
 			break;
 		case 'u':
 			from -= h;
-			if (from < 0) from = 0;
+			if (from < 0) {
+				from = 0;
+			}
 			break;
 		case ' ': from += h; break;
 		case 'g': from = 0; break;
@@ -263,6 +286,7 @@ R_API int r_cons_less_str(const char *str, const char *exitkeys) {
 	r_cons_reset_colors ();
 	r_cons_set_raw (false);
 	r_cons_show_cursor (true);
+	free (ostr);
 	return 0;
 }
 

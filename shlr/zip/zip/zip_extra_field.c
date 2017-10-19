@@ -169,10 +169,12 @@ _zip_ef_merge(struct zip_extra_field *to, struct zip_extra_field *from)
 
 	duplicate = 0;
 	for (tt=to; tt; tt=tt->next) {
-	    if (tt->id == from->id && tt->size == from->size && memcmp(tt->data, from->data, tt->size) == 0) {
-		tt->flags |= (from->flags & ZIP_EF_BOTH);
-		duplicate = 1;
-		break;
+	    if (tt->id == from->id && tt->size == from->size) {
+		if (tt->data && from->data && !memcmp(tt->data, from->data, tt->size)) {
+			tt->flags |= (from->flags & ZIP_EF_BOTH);
+			duplicate = 1;
+			break;
+		}
 	    }
 	}
 
@@ -198,16 +200,19 @@ _zip_ef_new(zip_uint16_t id, zip_uint16_t size, const zip_uint8_t *data, zip_fla
 
     ef->next = NULL;
     ef->flags = flags;
+	ef->data = NULL;
     ef->id = id;
     ef->size = size;
     if (size > 0) {
-	if ((ef->data=(zip_uint8_t *)_zip_memdup(data, size, NULL)) == NULL) {
+	zip_uint8_t *p = malloc (size);
+	if (p) {
+		ef->data = p;	
+		memcpy (p, data, size);
+	} else {
 	    free(ef);
 	    return NULL;
 	}
     }
-    else
-	ef->data = NULL;
 
     return ef;
 }

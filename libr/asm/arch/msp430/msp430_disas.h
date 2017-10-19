@@ -75,7 +75,7 @@ enum msp430_registers {
 };
 
 struct msp430_cmd {
-	ut8	type;
+	ut8 type;
 	ut16	opcode;
 	st16	jmp_addr;
 	ut16	call_addr;
@@ -84,5 +84,5 @@ struct msp430_cmd {
 	char	operands[MSP430_INSTR_MAXLEN];
 };
 
-int msp430_decode_command(const ut8 *instr, struct msp430_cmd *cmd);
+R_API int msp430_decode_command(const ut8 *instr, struct msp430_cmd *cmd);
 #endif /* MSP430_DISAS_H */

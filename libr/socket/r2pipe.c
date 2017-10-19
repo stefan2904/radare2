@@ -27,14 +27,18 @@ R_API int r2p_close(R2Pipe *r2p) {
 #else
 	if (r2p->input[0] != -1) {
 		close (r2p->input[0]);
-		close (r2p->input[1]);
 		r2p->input[0] = -1;
+	}
+	if (r2p->input[1] != -1) {
+		close (r2p->input[1]);
 		r2p->input[1] = -1;
 	}
 	if (r2p->output[0] != -1) {
 		close (r2p->output[0]);
-		close (r2p->output[1]);
 		r2p->output[0] = -1;
+	}
+	if (r2p->output[1] != -1) {
+		close (r2p->output[1]);
 		r2p->output[1] = -1;
 	}
 	if (r2p->child != -1) {
@@ -50,12 +54,12 @@ R_API int r2p_close(R2Pipe *r2p) {
 #if __WINDOWS__ && !defined(__CYGWIN__)
 static int w32_createChildProcess(const char * szCmdline) {
 	PROCESS_INFORMATION piProcInfo;
-	STARTUPINFO siStartInfo;
+	STARTUPINFOA siStartInfo;
 	BOOL bSuccess = FALSE;
 	ZeroMemory (&piProcInfo, sizeof (PROCESS_INFORMATION));
 	ZeroMemory (&siStartInfo, sizeof (STARTUPINFO));
 	siStartInfo.cb = sizeof (STARTUPINFO);
-	bSuccess = CreateProcess (NULL, (LPSTR)szCmdline, NULL, NULL,
+	bSuccess = CreateProcessA (NULL, (LPSTR)szCmdline, NULL, NULL,
 		TRUE, 0, NULL, NULL, &siStartInfo, &piProcInfo);
 	if (!bSuccess)
 		return false;
@@ -66,7 +70,7 @@ static int w32_createChildProcess(const char * szCmdline) {
 
 static int w32_createPipe(R2Pipe *r2p, const char *cmd) {
 	CHAR buf[1024];
-	r2p->pipe = CreateNamedPipe ("\\\\.\\pipe\\R2PIPE_IN",
+	r2p->pipe = CreateNamedPipeA ("\\\\.\\pipe\\R2PIPE_IN",
 		PIPE_ACCESS_DUPLEX,PIPE_TYPE_MESSAGE | \
 		PIPE_READMODE_MESSAGE | \
 		PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
@@ -134,9 +138,10 @@ R_API R2Pipe *r2p_open(const char *cmd) {
 	env ("R2PIPE_IN", r2p->input[0]);
 	env ("R2PIPE_OUT", r2p->output[1]);
 
+
 	if (r2p->child) {
-		eprintf ("[+] r2pipe child is %d\n", r2p->child);
 		char ch;
+		// eprintf ("[+] r2pipe child is %d\n", r2p->child);
 		if (read (r2p->output[0], &ch, 1) != 1) {
 			eprintf ("Failed to read 1 byte\n");
 			r2p_close (r2p);
@@ -146,16 +151,12 @@ R_API R2Pipe *r2p_open(const char *cmd) {
 			eprintf ("[+] r2pipe-io link failed. Expected two null bytes.\n");
 			r2p_close (r2p);
 			return NULL;
-		} else {
-			if (read (r2p->output[0], &ch, 1) != 1) {
-				eprintf ("Failed to read 1 byte\n");
-				r2p_close (r2p);
-				return NULL;
-			}
-			if (ch == 0x00) {
-				eprintf ("[+] r2pipe-io link stablished\n");
-			}
 		}
+		// Close parent's end of pipes
+		close(r2p->input[0]);
+		close(r2p->output[1]);
+		r2p->input[0] = -1;
+		r2p->output[1] = -1;
 	} else {
 		int rc = 0;
 		if (cmd && *cmd) {
@@ -163,6 +164,12 @@ R_API R2Pipe *r2p_open(const char *cmd) {
 			close (1);
 			dup2 (r2p->input[0], 0);
 			dup2 (r2p->output[1], 1);
+
+			close(r2p->input[1]);
+			close(r2p->output[0]);
+			r2p->input[1] = -1;
+			r2p->output[0] = -1;
+
 			rc = r_sandbox_system (cmd, 0);
 		}
 		r2p_close (r2p);
@@ -239,7 +246,7 @@ R_API int r2p_write(R2Pipe *r2p, const char *str) {
 /* TODO: add timeout here ? */
 R_API char *r2p_read(R2Pipe *r2p) {
 	int bufsz = 0;
-	char *newbuf, *buf = NULL;
+	char *buf = NULL;
 	if (!r2p) return NULL;
 	bufsz = 4096;
 	buf = calloc (1, bufsz);
@@ -257,6 +264,7 @@ R_API char *r2p_read(R2Pipe *r2p) {
 	}
 	buf[bufsz - 1] = 0;
 #else
+	char *newbuf;
 	int i, rv;
 	for (i = 0; i < bufsz; i++) {
 		rv = read (r2p->output[0], buf + i, 1);

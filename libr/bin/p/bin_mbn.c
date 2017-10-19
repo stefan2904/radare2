@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2015-2016 - pancake */
+/* radare2 - LGPL - Copyright 2015-2017 - pancake */
 
 #include <r_types.h>
 #include <r_util.h>
@@ -18,22 +18,10 @@ typedef struct sbl_header {
 	ut32 cert_sz;
 } SBLHDR;
 
-static int check(RBinFile *arch);
-static int check_bytes(const ut8 *buf, ut64 length);
-
 // TODO avoid globals
 static SBLHDR sb = {0};
 
-static int check(RBinFile *arch) {
-	if (arch && arch->buf) {
-		const ut8 *bytes = r_buf_buffer (arch->buf);
-		ut64 sz = r_buf_size (arch->buf);
-		return check_bytes (bytes, sz);
-	}
-	return false;
-}
-
-static int check_bytes(const ut8 *buf, ut64 bufsz) {
+static bool check_bytes(const ut8 *buf, ut64 bufsz) {
 	if (buf && bufsz >= sizeof (SBLHDR)) {
 		RBuffer *b = r_buf_new_with_pointers (buf, bufsz);
 		int ret = r_buf_fread_at (b, 0, (ut8*)&sb, "10i", 1);
@@ -54,7 +42,7 @@ static int check_bytes(const ut8 *buf, ut64 bufsz) {
 		if (sb.cert_sz >= 0xf0000) return false;
 		if (sb.sign_va < sb.vaddr) return false;
 		if (sb.sign_sz >= 0xf0000) return false;
-		if (sb.load_index < 0x10 || sb.load_index > 0x40) return false; // should be 0x19 ?
+		if (sb.load_index < 1 || sb.load_index > 0x40) return false; // should be 0x19 ?
 #if 0
 		eprintf ("V=%d\n", sb.version);
 		eprintf ("PA=0x%08x sz=0x%x\n", sb.paddr, sb.psize);
@@ -77,8 +65,13 @@ static void * load_bytes(RBinFile *arch, const ut8 *buf, ut64 sz, ut64 loadaddr,
 	return (void*)(size_t)check_bytes (buf, sz);
 }
 
-static int load(RBinFile *arch) {
-	return check(arch);
+static bool load(RBinFile *arch) {
+	if (arch && arch->buf) {
+		const ut8 *bytes = r_buf_buffer (arch->buf);
+		ut64 sz = r_buf_size (arch->buf);
+		return load_bytes (arch, bytes, sz, arch->o->loadaddr, arch->sdb) != NULL;
+	}
+	return false;
 }
 
 static int destroy (RBinFile *arch) {
@@ -93,8 +86,9 @@ static RList* entries(RBinFile *arch) {
 	RList* ret;
 	RBinAddr *ptr = NULL;
 
-	if (!(ret = r_list_new ()))
+	if (!(ret = r_list_new ())) {
 		return NULL;
+	}
 	ret->free = free;
 	if ((ptr = R_NEW0 (RBinAddr))) {
 		ptr->paddr = 40 + sb.code_pa;
@@ -109,15 +103,20 @@ static RList* sections(RBinFile *arch) {
 	RList *ret = NULL;
 	int rc;
 
-	if (!(ret = r_list_new ()))
+	if (!(ret = r_list_new ())) {
 		return NULL;
+	}
 	ret->free = free;
 	rc = r_buf_fread_at (arch->buf, 0, (ut8*)&sb, "10i", 1);
-	if (!rc) return false;
+	if (!rc) {
+		r_list_free (ret);
+		return false;
+	}
 
 	// add text segment
-	if (!(ptr = R_NEW0 (RBinSection)))
+	if (!(ptr = R_NEW0 (RBinSection))) {
 		return ret;
+	}
 	strncpy (ptr->name, "text", R_BIN_SIZEOF_STRINGS);
 	ptr->size = sb.psize;
 	ptr->vsize = sb.psize;
@@ -128,8 +127,9 @@ static RList* sections(RBinFile *arch) {
 	ptr->has_strings = true;
 	r_list_append (ret, ptr);
 
-	if (!(ptr = R_NEW0 (RBinSection)))
+	if (!(ptr = R_NEW0 (RBinSection))) {
 		return ret;
+	}
 	strncpy (ptr->name, "sign", R_BIN_SIZEOF_STRINGS);
 	ptr->size = sb.sign_sz;
 	ptr->vsize = sb.sign_sz;
@@ -141,8 +141,9 @@ static RList* sections(RBinFile *arch) {
 	r_list_append (ret, ptr);
 
 	if (sb.cert_sz && sb.cert_va > sb.vaddr) {
-		if (!(ptr = R_NEW0 (RBinSection)))
+		if (!(ptr = R_NEW0 (RBinSection))) {
 			return ret;
+		}
 		strncpy (ptr->name, "cert", R_BIN_SIZEOF_STRINGS);
 		ptr->size = sb.cert_sz;
 		ptr->vsize = sb.cert_sz;
@@ -159,8 +160,9 @@ static RList* sections(RBinFile *arch) {
 static RBinInfo* info(RBinFile *arch) {
 	RBinInfo *ret = NULL;
 	const int bits = 16;
-	if (!(ret = R_NEW0 (RBinInfo)))
+	if (!(ret = R_NEW0 (RBinInfo))) {
 		return NULL;
+	}
 	ret->file = strdup (arch->file);
 	ret->bclass = strdup ("bootloader");
 	ret->rclass = strdup ("mbn");
@@ -183,7 +185,7 @@ static ut64 size(RBinFile *arch) {
 	return sizeof (SBLHDR) + sb.psize;
 }
 
-struct r_bin_plugin_t r_bin_plugin_mbn = {
+RBinPlugin r_bin_plugin_mbn = {
 	.name = "mbn",
 	.desc = "MBN/SBL bootloader things",
 	.license = "LGPL3",
@@ -192,7 +194,6 @@ struct r_bin_plugin_t r_bin_plugin_mbn = {
 	.load_bytes = &load_bytes,
 	.size = &size,
 	.destroy = &destroy,
-	.check = &check,
 	.check_bytes = &check_bytes,
 	.baddr = &baddr,
 	.entries = &entries,
@@ -201,7 +202,7 @@ struct r_bin_plugin_t r_bin_plugin_mbn = {
 };
 
 #ifndef CORELIB
-struct r_lib_struct_t radare_plugin = {
+RLibStruct radare_plugin = {
 	.type = R_LIB_TYPE_BIN,
 	.data = &r_bin_plugin_mbn,
 	.version = R2_VERSION

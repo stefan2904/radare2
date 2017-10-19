@@ -13,6 +13,7 @@ endif
 
 -include ../../global.mk
 -include ../../../global.mk
+-include $(STOP)/bochs/deps.mk
 LDFLAGS+=-L$(LTOP)/util -lr_util
 LDFLAGS+=-L$(LTOP)/cons -lr_cons
 LDFLAGS+=-L$(LTOP)/parse -lr_parse
@@ -29,4 +30,4 @@ TARGET_BOCHS=debug_bochs.${EXT_SO}
 ALL_TARGETS+=${TARGET_BOCHS}
 
 ${TARGET_BOCHS}: ${OBJ_BOCHS}
-	${CC_LIB} $(call libname,debug_bochs) ${OBJ_BOCHS} ${CFLAGS} ${LDFLAGS}
+	${CC} $(call libname,debug_bochs) ${OBJ_BOCHS} ${CFLAGS} ${LDFLAGS}

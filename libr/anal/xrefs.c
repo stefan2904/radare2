@@ -1,6 +1,7 @@
-/* radare - LGPL - Copyright 2009-2016 - pancake, nibble */
+/* radare - LGPL - Copyright 2009-2017 - pancake, nibble */
 
 #include <r_anal.h>
+#include <r_cons.h>
 #include <sdb.h>
 
 #define DB anal->sdb_xrefs
@@ -28,14 +29,19 @@ static void XREFKEY(char * const key, const size_t key_len,
 	snprintf (key, key_len, "%s.%s.0x%"PFMT64x, kind, _sdb_type, addr);
 }
 
-R_API bool r_anal_xrefs_save(RAnal *anal, const char *prjfile) {
-	sdb_file (anal->sdb_xrefs, prjfile);
+R_API bool r_anal_xrefs_save(RAnal *anal, const char *prjDir) {
+	char *xrefs_path = r_str_newf ("%s" R_SYS_DIR "xrefs.sdb", prjDir);
+	sdb_file (anal->sdb_xrefs, xrefs_path);
+	free (xrefs_path);
 	return sdb_sync (anal->sdb_xrefs);
 }
 
 R_API int r_anal_xrefs_set (RAnal *anal, const RAnalRefType type, ut64 from, ut64 to) {
 	char key[33];
 	if (!anal || !DB) {
+		return false;
+	}
+	if (!anal->iob.is_valid_offset (anal->iob.io, to, 0)) {
 		return false;
 	}
 	// unknown refs should not be stored. seems wrong
@@ -110,11 +116,10 @@ R_API int r_anal_xrefs_from (RAnal *anal, RList *list, const char *kind, const R
 }
 
 R_API RList *r_anal_xrefs_get (RAnal *anal, ut64 to) {
-	RList *list = r_list_new ();
+	RList *list = r_list_newf (r_anal_ref_free);
 	if (!list) {
 		return NULL;
 	}
-	list->free = NULL; // XXX
 	r_anal_xrefs_from (anal, list, "xref", R_ANAL_REF_TYPE_NULL, to);
 	r_anal_xrefs_from (anal, list, "xref", R_ANAL_REF_TYPE_CODE, to);
 	r_anal_xrefs_from (anal, list, "xref", R_ANAL_REF_TYPE_CALL, to);
@@ -127,9 +132,28 @@ R_API RList *r_anal_xrefs_get (RAnal *anal, ut64 to) {
 	return list;
 }
 
+R_API RList *r_anal_refs_get (RAnal *anal, ut64 from) {
+	RList *list = r_list_newf (r_anal_ref_free);
+	if (!list) {
+		return NULL;
+	}
+	r_anal_xrefs_from (anal, list, "ref", R_ANAL_REF_TYPE_NULL, from);
+	r_anal_xrefs_from (anal, list, "ref", R_ANAL_REF_TYPE_CODE, from);
+	r_anal_xrefs_from (anal, list, "ref", R_ANAL_REF_TYPE_CALL, from);
+	r_anal_xrefs_from (anal, list, "ref", R_ANAL_REF_TYPE_DATA, from);
+	r_anal_xrefs_from (anal, list, "ref", R_ANAL_REF_TYPE_STRING, from);
+	if (r_list_empty (list)) {
+		r_list_free (list);
+		list = NULL;
+	}
+	return list;
+}
+
 R_API RList *r_anal_xrefs_get_from (RAnal *anal, ut64 to) {
 	RList *list = r_list_new ();
-	if (!list) return NULL;
+	if (!list) {
+		return NULL;
+	}
 	list->free = NULL; // XXX
 	r_anal_xrefs_from (anal, list, "ref", R_ANAL_REF_TYPE_NULL, to);
 	r_anal_xrefs_from (anal, list, "ref", R_ANAL_REF_TYPE_CODE, to);
@@ -143,7 +167,7 @@ R_API RList *r_anal_xrefs_get_from (RAnal *anal, ut64 to) {
 	return list;
 }
 
-R_API bool r_anal_xrefs_init (RAnal *anal) {
+R_API bool r_anal_xrefs_init(RAnal *anal) {
 	sdb_reset (DB);
 	if (DB) {
 		sdb_array_set (DB, "types", -1, "code.jmp,code.call,data.mem,data.string", 0);
@@ -164,17 +188,99 @@ static int xrefs_list_cb_rad(RAnal *anal, const char *k, const char *v) {
 	return 1;
 }
 
-static int xrefs_list_cb_json(RAnal *anal, const char *k, const char *v) {
+static int xrefs_list_cb_quiet(RAnal *anal, const char *k, const char *v) {
 	ut64 dst, src = r_num_get (NULL, v);
-	if (!strncmp (k, "ref.", 4) && (strlen (k) > 8)) {
+	if (!strncmp (k, "ref.", 4)) {
 		const char *p = r_str_rchr (k, NULL, '.');
 		if (p) {
 			dst = r_num_get (NULL, p + 1);
-			sscanf (p + 1, "0x%"PFMT64x, &dst);
-			anal->cb_printf ("%"PFMT64d":%"PFMT64d",", src, dst);
+			char * type = strchr (k, '.');
+			if (type) {
+				type = strdup (type + 1);
+				char *t = strchr (type, '.');
+				if (t) {
+					*t = ' ';
+				}
+				char *T = (char *)r_str_rchr (type, NULL, '.');
+				if (T) {
+					T = (char *)r_str_rchr (T, NULL, '.');
+					if (T) {
+						*T = 0;
+						anal->cb_printf ("0x%08"PFMT64x" -> 0x%08"PFMT64x"  %s\n", src, dst, type);
+					}
+				} else {
+					if (t) {
+						*t = 0;
+					}
+				}
+				anal->cb_printf ("0x%08"PFMT64x" -> 0x%08"PFMT64x"  %s\n", src, dst, type);
+				free (type);
+			}
 		}
 	}
 	return 1;
+}
+
+static int xrefs_list_cb_normal(RAnal *anal, const char *k, const char *v) {
+	ut64 dst, src = r_num_get (NULL, v);
+	if (!strncmp (k, "ref.", 4)) {
+		const char *p = r_str_rchr (k, NULL, '.');
+		if (p) {
+			dst = r_num_get (NULL, p + 1);
+			char * type = strchr (k, '.');
+			if (type) {
+				type = strdup (type + 1);
+				char *ot = strchr (type, '.');
+				if (ot) {
+					*ot = ' ';
+				}
+				char *t = (char *)r_str_rchr (type, NULL, '.');
+				if (t) {
+					t = (char *)r_str_rchr (t, NULL, '.');
+					if (t) {
+						*t = 0;
+					}
+				} else {
+					if (ot) {
+						*ot = 0;
+					}
+				}
+				{
+					char *name = anal->coreb.getNameDelta (anal->coreb.core, src);
+					anal->cb_printf ("%40s", name? name: "");
+					free (name);
+					anal->cb_printf (" 0x%"PFMT64x" -> %9s -> 0x%"PFMT64x, src, type, dst);
+					name = anal->coreb.getNameDelta (anal->coreb.core, dst);
+					if (name && *name) {
+						anal->cb_printf (" %s\n", name);
+					} else {
+						anal->cb_printf ("\n");
+					}
+					free (name);
+				}
+				free (type);
+			}
+		}
+	}
+	return 1;
+}
+
+static bool xrefs_list_cb_json(RAnal *anal, bool is_first, const char *k, const char *v) {
+	ut64 dst, src = r_num_get (NULL, v);
+	if (strlen (k) > 8) {
+		const char *p = r_str_rchr (k, NULL, '.');
+		if (p) {
+			if (is_first) {
+				is_first = false;
+			} else {
+				anal->cb_printf (",");
+			}
+			dst = r_num_get (NULL, p + 1);
+			sscanf (p + 1, "0x%"PFMT64x, &dst);
+			anal->cb_printf ("\"%"PFMT64d"\":%"PFMT64d, src, dst);
+		}
+	}
+	return is_first;
 }
 
 static int xrefs_list_cb_plain(RAnal *anal, const char *k, const char *v) {
@@ -188,10 +294,25 @@ R_API void r_anal_xrefs_list(RAnal *anal, int rad) {
 	case '*':
 		sdb_foreach (DB, (SdbForeachCallback)xrefs_list_cb_rad, anal);
 		break;
+	case '\0':
+		sdb_foreach (DB, (SdbForeachCallback)xrefs_list_cb_normal, anal);
+		break;
+	case 'q':
+		sdb_foreach (DB, (SdbForeachCallback)xrefs_list_cb_quiet, anal);
+		break;
 	case 'j':
+		{
 		anal->cb_printf ("{");
-		sdb_foreach (DB, (SdbForeachCallback)xrefs_list_cb_json, anal);
+		bool is_first = true;
+		SdbListIter *sdb_iter;
+		SdbKv *kv;
+		SdbList *sdb_list = sdb_foreach_match (DB, "^ref.", false);
+		ls_foreach (sdb_list, sdb_iter, kv) {
+			is_first = xrefs_list_cb_json (anal, is_first, kv->key, kv->value);
+		}
+		ls_free (sdb_list);
 		anal->cb_printf ("}\n");
+		}
 		break;
 	default:
 		sdb_foreach (DB, (SdbForeachCallback)xrefs_list_cb_plain, anal);

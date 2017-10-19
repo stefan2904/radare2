@@ -1,4 +1,4 @@
-.Dd Jun 20, 2016
+.Dd Aug 24, 2017
 .Dt RADARE2 1
 .Sh NAME
 .Nm radare2
@@ -16,9 +16,10 @@
 .Op Fl m Ar addr
 .Op Fl p Ar project
 .Op Fl P Ar patch
-.Op Fl R Ar rarun2
+.Op Fl r Ar rarun2
+.Op Fl R Ar rr2rule
 .Op Fl s Ar addr
-.Op Fl 0AdDwntLquvV
+.Op Fl 0AdDwntLquvVx
 .Ar -|--|=|file
 .Sh DESCRIPTION
 radare2 is a commandline hexadecimal editor.
@@ -35,6 +36,8 @@ Open radare2 on an empty file
 Equivalent of 'r2 malloc://512'
 .It Fl 0
 Print \\x00 after initialization and after every command executed
+.It Fl 2
+Close stderr before starting RCore
 .It Fl a Ar arch
 force asm.arch (x86, ppc, arm, mips, bf, java, ...)
 .It Fl A
@@ -74,13 +77,17 @@ Only load the rbin structures (elf, mach0, ...)
 .It Fl N
 Do not load user settings/projects from ~/.radare2rc, ~/.config/radare2/radare2rc and the scripts inside .../radare2rc.d/ directory.
 .It Fl q
-Quiet mode (no prompt)
+Quiet mode (no prompt) and quit after running the commands specified with -i or -c
+.It Fl Q
+Same as q, but exiting without freeing RCore, this produces leaks at exit time, but saves some precious ms to run the testsuite in fast mode.
 .It Fl p Ar prj
 Set project file
 .It Fl P Ar file
 Apply rapatch file and quit (see doc/rapatch.md for more details)
-.It Fl R Ar rarun2
+.It Fl r Ar rarun2
 Specify dbg.profile rarun2 profile to use when spawning a program for debugging
+.It Fl R Ar rarun2-directive
+Specify custom rarun2 directives without having to create a rarun2 profile
 .It Fl s Ar addr
 Start seeking at this address
 .It Fl S
@@ -99,6 +106,8 @@ Open in write mode
 Show help message
 .It Fl H
 Show files and environment help
+.It Fl x
+Open the file map without executable permissions
 .El
 .Sh SHELL
 Type '?' for help

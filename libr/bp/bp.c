@@ -1,7 +1,7 @@
-/* radare2 - LGPL - Copyright 2009-2015 - pancake */
+/* radare2 - LGPL - Copyright 2009-2017 - pancake */
 
 #include <r_bp.h>
-#include "../config.h"
+#include <config.h>
 
 R_LIB_VERSION (r_bp);
 
@@ -19,10 +19,12 @@ static void r_bp_item_free (RBreakpointItem *b) {
 }
 
 R_API RBreakpoint *r_bp_new() {
-	RBreakpoint *bp = R_NEW0 (RBreakpoint);
-	RBreakpointPlugin *static_plugin;
 	int i;
-	if (!bp) return NULL;
+	RBreakpointPlugin *static_plugin;
+	RBreakpoint *bp = R_NEW0 (RBreakpoint);
+	if (!bp) {
+		return NULL;
+	}
 	bp->bps_idx_count = 16;
 	bp->bps_idx = R_NEWS0 (RBreakpointItem*, bp->bps_idx_count);
 	bp->stepcont = R_BP_CONT_NORMAL;
@@ -30,6 +32,7 @@ R_API RBreakpoint *r_bp_new() {
 	bp->cb_printf = (PrintfCallback)printf;
 	bp->bps = r_list_newf ((RListFree)r_bp_item_free);
 	bp->plugins = r_list_newf ((RListFree)free);
+	bp->nhwbps = 0;
 	for (i = 0; bp_static_plugins[i]; i++) {
 		static_plugin = R_NEW (RBreakpointPlugin);
 		memcpy (static_plugin, bp_static_plugins[i],
@@ -58,8 +61,9 @@ repeat:
 		for (i=0; i< bp->cur->nbps; i++) {
 			b = &bp->cur->bps[i];
 			if (bp->cur->bps[i].bits) {
-				if (bp->bits != bp->cur->bps[i].bits)
+				if (bp->bits != bp->cur->bps[i].bits) {
 					continue;
+				}
 			}
 			if (bp->cur->bps[i].length == len && bp->cur->bps[i].endian == endian) {
 				memcpy (buf, b->bytes, b->length);
@@ -274,7 +278,7 @@ R_API int r_bp_list(RBreakpoint *bp, int rad) {
 			// TODO: add command, tracing, enable, ..
 			if (b->module_name) {
 			    	bp->cb_printf ("dbm %s %"PFMT64d"\n", b->module_name, b->module_delta);
-			} else { 
+			} else {
 				bp->cb_printf ("db 0x%08"PFMT64x"\n", b->addr);
 			}
 			//b->trace? "trace": "break",

@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2016 pancake */
+/* radare - LGPL - Copyright 2016-2017 pancake */
 
 #include <r_io.h>
 #include <r_asm.h>
@@ -6,20 +6,23 @@
 
 static int __io_step(RDebug *dbg) {
 	dbg->iob.system (dbg->iob.io, "ds");
-	r_cons_reset ();
-	return 0;
+	return true;
 }
 
 static int __io_step_over(RDebug *dbg) {
 	dbg->iob.system (dbg->iob.io, "dso");
-	r_cons_reset ();
 	return true;
 }
 
 static RList *__io_maps(RDebug *dbg) {
 	RList *list = r_list_new ();
 	dbg->iob.system (dbg->iob.io, "dm");
-	char *ostr, *str = strdup (r_cons_get_buffer ());
+	const char *consdata = r_cons_get_buffer ();
+	if (!consdata) {
+		r_list_free (list);
+		return NULL;
+	}
+	char *ostr, *str = strdup (consdata);
 	ut64 map_start, map_end;
 	char perm[32];
 	char name[512];
@@ -88,20 +91,32 @@ static char *__io_reg_profile(RDebug *dbg) {
 }
 
 // "dr8" read register state
-static int __io_read(RDebug *dbg, int type, ut8 *buf, int size) {
+static int __reg_read(RDebug *dbg, int type, ut8 *buf, int size) {
 	dbg->iob.system (dbg->iob.io, "dr8");
-	char *regs = strdup (r_cons_get_buffer ());
+	const char *fb = r_cons_get_buffer ();
+	if (!fb || !*fb) {
+		eprintf ("debug.io: Failed to get dr8 from io\n");
+		return -1;
+	}
+	char *regs = strdup (fb);
 	ut8 *bregs = calloc (1, strlen (regs));
+	if (!bregs) {
+		free (regs);
+		return -1;
+	}
 	r_cons_reset ();
+	r_str_chop ((char *)bregs);
 	int sz = r_hex_str2bin (regs, bregs);
 	if (sz > 0) {
 		memcpy (buf, bregs, R_MIN (size, sz));
 		free (bregs);
+		free (regs);
 		return size;
 	} else {
-		eprintf ("SIZE %d (%s)\n", sz, regs);
+		// eprintf ("SIZE %d (%s)\n", sz, regs);
 	}
 	free (bregs);
+	free (regs);
 	return -1;
 }
 
@@ -113,7 +128,7 @@ static int __io_continue(RDebug *dbg, int pid, int tid, int sig) {
 }
 
 // "dk" send kill signal
-static int __io_kill(RDebug *dbg, int pid, int tid, int sig) {
+static bool __io_kill(RDebug *dbg, int pid, int tid, int sig) {
 	const char *cmd = sdb_fmt (-1, "dk %d", sig);
 	dbg->iob.system (dbg->iob.io, cmd);
 	r_cons_flush ();
@@ -122,7 +137,6 @@ static int __io_kill(RDebug *dbg, int pid, int tid, int sig) {
 
 RDebugPlugin r_debug_plugin_io = {
 	.name = "io",
-	.keepio = 1,
 	.license = "MIT",
 	.arch = "any", // TODO: exception!
 	.bits = R_SYS_BITS_32 | R_SYS_BITS_64,
@@ -130,11 +144,12 @@ RDebugPlugin r_debug_plugin_io = {
 	.map_get = __io_maps,
 	.attach = &__io_attach,
 	.wait = &__io_wait,
-	.reg_read = __io_read,
+	.reg_read = __reg_read,
 	.cont = __io_continue,
 	.kill = __io_kill,
 	.reg_profile = __io_reg_profile,
 	.step_over = __io_step_over,
+	.canstep = 1,
 #if 0
 	.init = __esil_init,
 	.contsc = __esil_continue_syscall,

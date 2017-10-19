@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2008-2016 - pancake */
+/* radare2 - LGPL - Copyright 2008-2017 - pancake, Jody Frankowski */
 
 #include <r_cons.h>
 #include <r_print.h>
@@ -18,6 +18,32 @@ R_LIB_VERSION (r_cons);
 static RCons r_cons_instance;
 #define I r_cons_instance
 
+//this structure goes into cons_stack when r_cons_push/pop
+typedef struct {
+	char *buf;
+	int buf_len;
+	int buf_size;
+	RConsGrep *grep;
+} RConsStack;
+
+typedef struct {
+	bool breaked;
+	void *data;
+	RConsEvent event_interrupt;
+} RConsBreakStack;
+
+static void break_stack_free(void *ptr) {
+	RConsBreakStack *b = (RConsBreakStack*)ptr;
+	free (b);
+}
+
+static void cons_stack_free(void *ptr) {
+	RConsStack *s = (RConsStack *)ptr;
+	free (s->buf);
+	free (s->grep);
+	free (s);
+}
+
 static void break_signal(int sig) {
 	I.breaked = true;
 	r_print_set_interrupted (I.breaked);
@@ -26,7 +52,7 @@ static void break_signal(int sig) {
 	}
 }
 
-static inline void r_cons_write (const char *buf, int len) {
+static inline void r_cons_write(const char *buf, int len) {
 #if __WINDOWS__ && !__CYGWIN__
 	if (I.ansicon) {
 		(void) write (I.fdout, buf, len);
@@ -38,6 +64,9 @@ static inline void r_cons_write (const char *buf, int len) {
 		}
 	}
 #else
+	if (I.fdout < 1) {
+		I.fdout = 1;
+	}
 	(void) write (I.fdout, buf, len);
 #endif
 }
@@ -123,7 +152,7 @@ R_API void r_cons_println(const char* str) {
 	r_cons_newline ();
 }
 
-R_API void r_cons_strcat_justify (const char *str, int j, char c) {
+R_API void r_cons_strcat_justify(const char *str, int j, char c) {
 	int i, o, len;
 	for (o = i = len = 0; str[i]; i++, len++) {
 		if (str[i]=='\n') {
@@ -141,7 +170,7 @@ R_API void r_cons_strcat_justify (const char *str, int j, char c) {
 		}
 	}
 	if (len > 1) {
-		r_cons_memcat (str+o, len);
+		r_cons_memcat (str + o, len);
 	}
 }
 
@@ -149,25 +178,89 @@ R_API RCons *r_cons_singleton () {
 	return &I;
 }
 
-R_API void r_cons_break(void (*cb)(void *u), void *user) {
+R_API void r_cons_break_clear() {
 	I.breaked = false;
-	I.event_interrupt = cb;
-	I.data = user;
+}
+
+R_API void r_cons_break_push(RConsBreak cb, void *user) {
+	if (I.break_stack) {
+		//if we don't have any element in the stack start the signal
+		RConsBreakStack *b = R_NEW0 (RConsBreakStack);
+		if (!b) return;
+		if (r_stack_is_empty (I.break_stack)) {
 #if __UNIX__ || __CYGWIN__
-	signal (SIGINT, break_signal);
+			signal (SIGINT, break_signal);
 #endif
+			I.breaked = false;
+		}
+		//save the actual state
+		b->event_interrupt = I.event_interrupt;
+		b->data = I.data;
+		r_stack_push (I.break_stack, b);
+		//configure break
+		I.event_interrupt = cb;
+		I.data = user;
+	}
+}
+
+R_API void r_cons_break_pop() {
+	//restore old state
+	if (I.break_stack) {
+		RConsBreakStack *b = NULL;
+		r_print_set_interrupted (I.breaked);
+		b = r_stack_pop (I.break_stack);
+		if (b) {
+			I.event_interrupt = b->event_interrupt;
+			I.data = b->data;
+			break_stack_free (b);
+		} else {
+			//there is not more elements in the stack
+#if __UNIX__ || __CYGWIN__
+			signal (SIGINT, SIG_IGN);
+#endif
+			I.breaked = false;
+		}
+	}
 }
 
 R_API bool r_cons_is_breaked() {
+	if (I.timeout) {
+		if (r_sys_now () > I.timeout) {
+			I.breaked = true;
+			eprintf ("\nTimeout!\n");
+			I.timeout = 0;
+		}
+	}
 	return I.breaked;
+}
+
+R_API void r_cons_break_timeout(int timeout) {
+	if (!timeout && I.timeout) {
+		I.timeout = 0;
+	} else {
+		if (timeout) {
+			I.timeout = r_sys_now () + (timeout * 1000000);
+		} else {
+			I.timeout = 0;
+		}
+	}
 }
 
 R_API void r_cons_break_end() {
 	I.breaked = false;
+	I.timeout = 0;
 	r_print_set_interrupted (I.breaked);
 #if __UNIX__ || __CYGWIN__
 	signal (SIGINT, SIG_IGN);
 #endif
+	if (!r_stack_is_empty (I.break_stack)) {
+		//free all the stack
+		r_stack_free (I.break_stack);
+		//create another one
+		I.break_stack = r_stack_newf (6, break_stack_free);
+		I.data = NULL;
+		I.event_interrupt = NULL;
+	}
 }
 
 #if __WINDOWS__ && !__CYGWIN__
@@ -175,7 +268,7 @@ static HANDLE h;
 static BOOL __w32_control(DWORD type) {
 	if (type == CTRL_C_EVENT) {
 		break_signal (2); // SIGINT
-		eprintf("{ctrl+c} pressed.\n");
+		eprintf ("{ctrl+c} pressed.\n");
 		return true;
 	}
 	return false;
@@ -206,20 +299,22 @@ static void r_cons_pal_null() {
 	int i;
 	RCons *cons = r_cons_singleton ();
 	for (i = 0; i < R_CONS_PALETTE_LIST_SIZE; i++){
-		cons->pal.list[i] = NULL;	
+		cons->pal.list[i] = NULL;
 	}
 }
 
-R_API RCons *r_cons_new () {
+R_API RCons *r_cons_new() {
 	I.refcnt++;
 	if (I.refcnt != 1) {
 		return &I;
 	}
+	I.rgbstr = r_cons_rgb_str_off;
 	I.line = r_line_new ();
 	I.highlight = NULL;
 	I.event_interrupt = NULL;
 	I.is_wine = -1;
 	I.fps = 0;
+	I.use_color = false;
 	I.blankline = true;
 	I.teefile = NULL;
 	I.fix_columns = 0;
@@ -232,14 +327,16 @@ R_API RCons *r_cons_new () {
 	I.event_data = NULL;
 	I.is_interactive = true;
 	I.noflush = false;
+	I.linesleep = 0;
 	I.fdin = stdin;
 	I.fdout = 1;
 	I.breaked = false;
+	I.break_lines = false;
 	//I.lines = 0;
 	I.buffer = NULL;
 	I.buffer_sz = 0;
 	I.buffer_len = 0;
-	r_cons_get_size (NULL);
+	r_cons_get_size (&I.pagesize);
 	I.num = NULL;
 	I.null = 0;
 #if __WINDOWS__ && !__CYGWIN__
@@ -267,6 +364,8 @@ R_API RCons *r_cons_new () {
 	I.pager = NULL; /* no pager by default */
 	I.truecolor = 0;
 	I.mouse = 0;
+	I.cons_stack = r_stack_newf (6, cons_stack_free);
+	I.break_stack = r_stack_newf (6, break_stack_free);
 	r_cons_pal_null ();
 	r_cons_pal_init (NULL);
 	r_cons_rgb_init ();
@@ -274,7 +373,7 @@ R_API RCons *r_cons_new () {
 	return &I;
 }
 
-R_API RCons *r_cons_free () {
+R_API RCons *r_cons_free() {
 	I.refcnt--;
 	if (I.refcnt != 0) {
 		return NULL;
@@ -288,19 +387,22 @@ R_API RCons *r_cons_free () {
 		free (I.buffer);
 		I.buffer = NULL;
 	}
+	R_FREE (I.break_word);
+	r_stack_free (I.cons_stack);
+	r_stack_free (I.break_stack);
 	return NULL;
 }
 
 #define MOAR (4096 * 8)
-static void palloc(int moar) {
+static bool palloc(int moar) {
 	void *temp;
 	if (moar <= 0) {
-		return;
+		return false;
 	}
 	if (!I.buffer) {
 		int new_sz;
 		if ((INT_MAX - MOAR) < moar) {
-			return;
+			return false;
 		}
 		new_sz = moar + MOAR;
 		temp = calloc (1, new_sz);
@@ -309,20 +411,22 @@ static void palloc(int moar) {
 			I.buffer = temp;
 			I.buffer[0] = '\0';
 		}
-	} else if (moar + I.buffer_len >= I.buffer_sz) {
+	} else if (moar + I.buffer_len > I.buffer_sz) {
 		char *new_buffer;
 		int old_buffer_sz = I.buffer_sz;
 		if ((INT_MAX - MOAR - moar) < I.buffer_sz) {
-			return;
+			return false;
 		}
-		I.buffer_sz += moar+MOAR;
+		I.buffer_sz += moar + MOAR;
 		new_buffer = realloc (I.buffer, I.buffer_sz);
 		if (new_buffer) {
 			I.buffer = new_buffer;
 		} else {
 			I.buffer_sz = old_buffer_sz;
+			return false;
 		}
 	}
+	return true;
 }
 
 R_API int r_cons_eof() {
@@ -330,19 +434,6 @@ R_API int r_cons_eof() {
 }
 
 R_API void r_cons_gotoxy(int x, int y) {
-#if 0
-#if __WINDOWS__
-        static HANDLE hStdout = NULL;
-        COORD coord;
-        coord.X = x;
-        coord.Y = y;
-        if (!hStdout)
-                hStdout = GetStdHandle (STD_OUTPUT_HANDLE);
-        SetConsoleCursorPosition (hStdout, coord);
-#else
-	r_cons_printf ("\x1b[%d;%dH", y, x);
-#endif
-#endif
 	r_cons_printf ("\x1b[%d;%dH", y, x);
 }
 
@@ -375,9 +466,13 @@ R_API void r_cons_clear_line(int std_err) {
 	} else {
 		char white[1024];
 		memset (&white, ' ', sizeof (white));
-		if (I.columns<sizeof (white))
-			white[I.columns-1] = 0;
-		else white[sizeof (white)-1] = 0; // HACK
+		if (I.columns > 0 && I.columns < sizeof(white)) {
+			white[I.columns - 1] = 0;
+		} else if (I.columns == 0) {
+			white[0] = 0;
+		} else {
+			white[sizeof (white) - 1] = 0; // HACK
+		}
 		fprintf (std_err? stderr: stdout, "\r%s\r", white);
 	}
 #else
@@ -397,63 +492,104 @@ R_API void r_cons_reset_colors() {
 
 R_API void r_cons_clear() {
 	r_cons_strcat (Color_RESET"\x1b[2J");
-	//r_cons_gotoxy (0, 0);
-//	r_cons_flush ();
 	I.lines = 0;
 }
 
 R_API void r_cons_reset() {
-	if (I.buffer)
+	if (I.buffer) {
 		I.buffer[0] = '\0';
+	}
 	I.buffer_len = 0;
 	I.lines = 0;
 	I.lastline = I.buffer;
 	I.grep.strings[0][0] = '\0';
 	I.grep.nstrings = 0; // XXX
 	I.grep.line = -1;
-	I.grep.str = NULL;
-	memset (I.grep.tokens, 0, R_CONS_GREP_TOKENS);
+	I.grep.sort = -1;
+	I.grep.sort_invert = false;
+	R_FREE (I.grep.str);
+	ZERO_FILL (I.grep.tokens);
 	I.grep.tokens_used = 0;
 }
 
 R_API const char *r_cons_get_buffer() {
-	return I.buffer;
+	//check len otherwise it will return trash
+	return I.buffer_len? I.buffer : NULL;
 }
 
 R_API void r_cons_filter() {
-	/* grep*/
-	if (I.grep.nstrings>0 || I.grep.tokens_used || I.grep.line!=-1 || I.grep.less || I.grep.json)
+	/* grep */
+	if (I.filter || I.grep.nstrings > 0 || I.grep.tokens_used || I.grep.less || I.grep.json) {
 		r_cons_grepbuf (I.buffer, I.buffer_len);
+		I.filter = false;
+	}
 	/* html */
+	if (I.is_html) {
+		int newlen = 0;
+		char *input = r_str_ndup (I.buffer, I.buffer_len);
+		char *res = r_cons_html_filter (input, &newlen);
+		free (I.buffer);
+		free (input);
+		I.buffer = res;
+		I.buffer_len = newlen;
+		I.buffer_sz = newlen;
+	}
 	/* TODO */
 }
 
-static char *backup = NULL;
-static int backup_len = 0;
-static int backup_size = 0;
-
-// XXX this must be a stack
 R_API void r_cons_push() {
-	if (!backup) {
-		if (I.buffer_len<1)
-			I.buffer_len = 1;
-		backup = I.buffer; //malloc (I.buffer_len);
-		backup_len = I.buffer_len;
-		backup_size = I.buffer_sz;
-		I.buffer = malloc (I.buffer_sz);
-		if (!I.buffer) return;
-		memcpy (I.buffer, backup, I.buffer_len);
+	if (I.cons_stack) {
+		RConsStack *data = R_NEW0 (RConsStack);
+		if (!data) {
+			return;
+		}
+		if (I.buffer) {
+			data->buf = malloc (I.buffer_sz);
+			if (!data->buf) {
+				free (data);
+				return;
+			}
+			memcpy (data->buf, I.buffer, I.buffer_sz);
+			data->buf_len = I.buffer_len;
+			data->buf_size = I.buffer_sz;
+		}
+		data->grep = R_NEW0 (RConsGrep);
+		if (data->grep) {
+			memcpy (data->grep, &I.grep, sizeof (RConsGrep));
+			if (I.grep.str) {
+				data->grep->str = strdup (I.grep.str);
+			}
+		}
+		r_stack_push (I.cons_stack, data);
 		I.buffer_len = 0;
+		if (I.buffer) {
+			memset (I.buffer, 0, I.buffer_sz);
+		}
 	}
 }
 
 R_API void r_cons_pop() {
-	if (backup) {
+	if (I.cons_stack) {
+		RConsStack *data = (RConsStack *)r_stack_pop (I.cons_stack);
+		if (!data) {
+			return;
+		}
 		free (I.buffer);
-		I.buffer = backup;
-		I.buffer_len = backup_len;
-		I.buffer_sz = backup_size;
-		backup = NULL;
+		I.buffer = data->buf ? malloc (data->buf_size) : NULL;
+		I.buffer_len = data->buf_len;
+		I.buffer_sz = data->buf_size;
+		if (I.buffer) {
+			memcpy (I.buffer, data->buf, data->buf_size);
+		}
+		if (data->grep) {
+			memcpy (&I.grep, data->grep, sizeof (RConsGrep));
+			if (data->grep->str) {
+				char *old = I.grep.str;
+				I.grep.str = strdup (data->grep->str);
+				R_FREE (old);
+			}
+		}
+		cons_stack_free ((void *)data);
 	}
 }
 
@@ -478,11 +614,12 @@ R_API void r_cons_flush() {
 		} else if (I.buffer_len > CONS_MAX_USER) {
 #if COUNT_LINES
 			int i, lines = 0;
-			for (i=0; I.buffer[i]; i++) {
-				if (I.buffer[i]=='\n')
+			for (i = 0; I.buffer[i]; i++) {
+				if (I.buffer[i] == '\n') {
 					lines ++;
+				}
 			}
-			if (lines>0 && !r_cons_yesno ('n',"Do you want to print %d lines? (y/N)", lines)) {
+			if (lines > 0 && !r_cons_yesno ('n',"Do you want to print %d lines? (y/N)", lines)) {
 				r_cons_reset ();
 				return;
 			}
@@ -500,16 +637,43 @@ R_API void r_cons_flush() {
 	}
 	if (tee && *tee) {
 		FILE *d = r_sandbox_fopen (tee, "a+");
-		if (d != NULL) {
-			if (I.buffer_len != fwrite (I.buffer, 1, I.buffer_len, d))
+		if (d) {
+			if (I.buffer_len != fwrite (I.buffer, 1, I.buffer_len, d)) {
 				eprintf ("r_cons_flush: fwrite: error (%s)\n", tee);
+			}
 			fclose (d);
-		} else eprintf ("Cannot write on '%s'\n", tee);
+		} else {
+			eprintf ("Cannot write on '%s'\n", tee);
+		}
 	}
 	r_cons_highlight (I.highlight);
 	// is_html must be a filter, not a write endpoint
-	if (I.is_html) r_cons_html_print (I.buffer);
-	else r_cons_write (I.buffer, I.buffer_len);
+	if (I.is_interactive && !r_sandbox_enable (false)) {
+		if (I.linesleep > 0 && I.linesleep < 1000) {
+			int i = 0;
+			int pagesize = R_MAX (1, I.pagesize);
+			char *ptr = I.buffer;
+			char *nl = strchr (ptr, '\n');
+			int len = I.buffer_len;
+			I.buffer[I.buffer_len] = 0;
+			r_cons_break_push (NULL, NULL);
+			while (nl && !r_cons_is_breaked ()) {
+				r_cons_write (ptr, nl - ptr + 1);
+				if (!(i % pagesize)) {
+					r_sys_usleep (I.linesleep * 1000);
+				}
+				ptr = nl + 1;
+				nl = strchr (ptr, '\n');
+				i++;
+			}
+			r_cons_write (ptr, I.buffer + len - ptr);
+			r_cons_break_pop ();
+		} else {
+			r_cons_write (I.buffer, I.buffer_len);
+		}
+	} else {
+		r_cons_write (I.buffer, I.buffer_len);
+	}
 
 	r_cons_reset ();
 	if (I.newline) {
@@ -545,7 +709,9 @@ R_API void r_cons_visual_flush() {
 			ut64 diff = now-prev;
 			fps = (diff<1000000)? (1000000/diff): 0;
 			prev = now;
-		} else prev = r_sys_now ();
+		} else {
+			prev = r_sys_now ();
+		}
 		eprintf ("\x1b[0;%dH[%d FPS] \n", w-10, fps);
 	}
 }
@@ -564,13 +730,17 @@ R_API void r_cons_visual_write (char *buffer) {
 	char white[1024];
 	int cols = I.columns;
 	int alen, plen, lines = I.rows;
+	bool break_lines = I.break_lines;
 	const char *endptr;
 	char *nl, *ptr = buffer, *pptr;
 
-	if (I.null) return;
+	if (I.null) {
+		return;
+	}
 	memset (&white, ' ', sizeof (white));
 	while ((nl = strchr (ptr, '\n'))) {
 		int len = ((int)(size_t)(nl-ptr))+1;
+		int lines_needed;
 
 		*nl = 0;
 		alen = real_strlen (ptr, len);
@@ -578,9 +748,13 @@ R_API void r_cons_visual_write (char *buffer) {
 		pptr = ptr > buffer ? ptr - 1 : ptr;
 		plen = ptr > buffer ? len : len - 1;
 
-		if (alen > cols) {
+		if (break_lines) {
+			lines_needed = alen / cols + (alen % cols == 0 ? 0 : 1);
+		}
+		if ((break_lines && lines < lines_needed && lines > 0)
+		    || (!break_lines && alen > cols)) {
 			int olen = len;
-			endptr = r_str_ansi_chrn (ptr, cols);
+			endptr = r_str_ansi_chrn (ptr, (break_lines ? cols * lines : cols) + 1);
 			endptr++;
 			len = endptr - ptr;
 			plen = ptr > buffer ? len : len - 1;
@@ -592,11 +766,12 @@ R_API void r_cons_visual_write (char *buffer) {
 			}
 		} else {
 			if (lines > 0) {
-				int w = cols - alen;
+				int w = cols - (alen % cols == 0 ? cols : alen % cols);
 				r_cons_write (pptr, plen);
-				if (I.blankline && w>0) {
-					if (w > sizeof (white) - 1)
+				if (I.blankline && w > 0) {
+					if (w > sizeof (white) - 1) {
 						w = sizeof (white) - 1;
+					}
 					r_cons_write (white, w);
 				}
 			}
@@ -606,7 +781,11 @@ R_API void r_cons_visual_write (char *buffer) {
 				r_cons_write (pptr, plen);
 			}
 		}
-		lines--; // do not use last line
+		if (break_lines) {
+			lines -= lines_needed;
+		} else {
+			lines--; // do not use last line
+		}
 		ptr = nl + 1;
 	}
 	/* fill the rest of screen */
@@ -620,60 +799,88 @@ R_API void r_cons_visual_write (char *buffer) {
 	}
 }
 
-R_API void r_cons_printf(const char *format, ...) {
+R_API void r_cons_printf_list(const char *format, va_list ap) {
 	size_t size, written;
-	va_list ap;
+	va_list ap2, ap3;
 
-	if (I.null || !format) return;
+	va_copy (ap2, ap);
+	va_copy (ap3, ap);
+	if (I.null || !format) {
+		va_end (ap2);
+		va_end (ap3);
+		return;
+	}
 	if (strchr (format, '%')) {
 		palloc (MOAR + strlen (format) * 20);
+club:
 		size = I.buffer_sz - I.buffer_len - 1; /* remaining space in I.buffer */
-		va_start (ap, format);
-		written = vsnprintf (I.buffer+I.buffer_len, size, format, ap);
-		va_end (ap);
-		if (written>=size) { /* not all bytes were written */
+		written = vsnprintf (I.buffer + I.buffer_len, size, format, ap3);
+		if (written >= size) { /* not all bytes were written */
 			palloc (written);
-			va_start (ap, format);
-			written = vsnprintf (I.buffer+I.buffer_len, written, format, ap);
-			va_end (ap);
+			va_end (ap3);
+			va_copy (ap3, ap2);
+			goto club;
 		}
 		I.buffer_len += written;
+		I.buffer[I.buffer_len] = 0;
 	} else {
 		r_cons_strcat (format);
 	}
+	va_end (ap2);
+	va_end (ap3);
+}
+
+R_API void r_cons_printf(const char *format, ...) {
+	va_list ap;
+	if (!format || !*format) {
+		return;
+	}
+	va_start (ap, format);
+	r_cons_printf_list (format, ap);
+	va_end (ap);
 }
 
 R_API int r_cons_get_column() {
 	char *line = strrchr (I.buffer, '\n');
-	if (!line) line = I.buffer;
+	if (!line) {
+		line = I.buffer;
+	}
 	I.buffer[I.buffer_len] = 0;
 	return r_str_ansi_len (line);
 }
 
 /* final entrypoint for adding stuff in the buffer screen */
-R_API void r_cons_memcat(const char *str, int len) {
+R_API int r_cons_memcat(const char *str, int len) {
 	if (len < 0 || (I.buffer_len + len) < 0) {
-		return;
+		return -1;
 	}
 	if (I.echo) {
 		write (2, str, len);
 	}
 	if (str && len > 0 && !I.null) {
-		palloc (len+1);
-		memcpy (I.buffer + I.buffer_len, str, len);
-		I.buffer_len += len;
-		I.buffer[I.buffer_len] = 0;
+		if (palloc (len + 1)) {
+			memcpy (I.buffer + I.buffer_len, str, len);
+			I.buffer_len += len;
+			I.buffer[I.buffer_len] = 0;
+		}
 	}
 	if (I.flush) {
 		r_cons_flush ();
 	}
+	if (I.break_word && str && len > 0) {
+		if (r_mem_mem ((const ut8*)str, len, (const ut8*)I.break_word, I.break_word_len)) {
+			I.breaked = true;
+		}
+	}
+	return len;
 }
 
 R_API void r_cons_memset(char ch, int len) {
 	if (!I.null && len > 0) {
 		palloc (len + 1);
-		memset (I.buffer + I.buffer_len, ch, len + 1);
+		memset (I.buffer + I.buffer_len, ch, len);
 		I.buffer_len += len;
+		I.buffer[I.buffer_len] = 0;
 	}
 }
 
@@ -692,6 +899,13 @@ R_API void r_cons_newline() {
 	if (!I.null) {
 		r_cons_strcat ("\n");
 	}
+// This place is wrong to manage the color reset, can interfire with r2pipe output sending resetchars
+//  and break json output appending extra chars.
+// this code now is managed into output.c:118 at function r_cons_w32_print
+// now the console color is reset with each \n (same stuff do it here but in correct place ... i think)
+//#if __WINDOWS__
+	//r_cons_reset_colors();
+//#endif
 	//if (I.is_html) r_cons_strcat ("<br />\n");
 }
 
@@ -703,15 +917,15 @@ R_API int r_cons_get_cursor(int *rows) {
 	for (i = 0; i < I.buffer_len; i++) {
 		// ignore ansi chars, copypasta from r_str_ansi_len
 		if (I.buffer[i] == 0x1b) {
-			char ch2 = I.buffer[i+1];
+			char ch2 = I.buffer[i + 1];
 			char *str = I.buffer;
 			if (ch2 == '\\') {
 				i++;
 			} else if (ch2 == ']') {
-				if (!strncmp (str+2+5, "rgb:", 4))
+				if (!strncmp (str + 2 + 5, "rgb:", 4))
 					i += 18;
 			} else if (ch2 == '[') {
-				for (++i; str[i]&&str[i]!='J'&& str[i]!='m'&&str[i]!='H';i++);
+				for (++i; str[i] && str[i] != 'J' && str[i] != 'm' && str[i] != 'H'; i++);
 			}
 		} else if (I.buffer[i] == '\n') {
 			row++;
@@ -738,7 +952,7 @@ R_API bool r_cons_isatty() {
 	if (ioctl (1, TIOCGWINSZ, &win)) {
 		return false;
 	}
-	if ((win.ws_col == 0) || (win.ws_row == 0)) {
+	if (!win.ws_col || !win.ws_row) {
 		return false;
 	}
 	tty = ttyname (1);
@@ -757,23 +971,27 @@ R_API bool r_cons_isatty() {
 // XXX: if this function returns <0 in rows or cols expect MAYHEM
 R_API int r_cons_get_size(int *rows) {
 #if __WINDOWS__ && !__CYGWIN__
-	char buffer[1024];
 	CONSOLE_SCREEN_BUFFER_INFO csbi;
 	GetConsoleScreenBufferInfo (GetStdHandle (STD_OUTPUT_HANDLE), &csbi);
 	I.columns = (csbi.srWindow.Right - csbi.srWindow.Left) - 1;
 	I.rows = csbi.srWindow.Bottom - csbi.srWindow.Top; // last row empty
+ 	if (I.columns == -1 && I.rows == 0) {
+		// Stdout is probably redirected so we set default values
+		I.columns = 80;
+		I.rows = 23;
+	}
 #elif EMSCRIPTEN
 	I.columns = 80;
 	I.rows = 23;
 #elif __UNIX__ || __CYGWIN__
 	struct winsize win = { 0 };
-	if (isatty (0) && ioctl (0, TIOCGWINSZ, &win) == 0) {
-		if ((win.ws_col == 0) || (win.ws_row == 0)) {
+	if (isatty (0) && !ioctl (0, TIOCGWINSZ, &win)) {
+		if ((!win.ws_col) || (!win.ws_row)) {
 			const char *tty = ttyname (1);
 			int fd = open (tty? tty: "/dev/tty", O_RDONLY);
 			if (fd != -1) {
 				int ret = ioctl (fd, TIOCGWINSZ, &win);
-				if ((ret != 0) || (win.ws_col == 0) || (win.ws_row == 0)) {
+				if (ret || !win.ws_col || !win.ws_row) {
 					win.ws_col = 80;
 					win.ws_row = 23;
 				}
@@ -812,12 +1030,21 @@ R_API int r_cons_get_size(int *rows) {
 	if (I.columns < 0) {
 		I.columns = 0;
 	}
-	if (I.force_columns) I.columns = I.force_columns;
-	if (I.force_rows) I.rows = I.force_rows;
-	if (I.fix_columns) I.columns += I.fix_columns;
-	if (I.fix_rows) I.rows += I.fix_rows;
-	if (rows)
+	if (I.force_columns) {
+		I.columns = I.force_columns;
+	}
+	if (I.force_rows) {
+		I.rows = I.force_rows;
+	}
+	if (I.fix_columns) {
+		I.columns += I.fix_columns;
+	}
+	if (I.fix_rows) {
+		I.rows += I.fix_rows;
+	}
+	if (rows) {
 		*rows = I.rows;
+	}
 	I.rows = R_MAX (0, I.rows);
 	return R_MAX (0, I.columns);
 }
@@ -920,15 +1147,17 @@ R_API void r_cons_set_cup(int enable) {
 }
 
 R_API void r_cons_column(int c) {
-	char *b = malloc (I.buffer_len+1);
-	if (!b) return;
+	char *b = malloc (I.buffer_len + 1);
+	if (!b) {
+		return;
+	}
 	memcpy (b, I.buffer, I.buffer_len);
 	b[I.buffer_len] = 0;
 	r_cons_reset ();
 	// align current buffer N chars right
 	r_cons_strcat_justify (b, c, 0);
 	r_cons_gotoxy (0, 0);
-	free(b);
+	free (b);
 }
 
 static int lasti = 0; /* last interactive mode */
@@ -1004,20 +1233,27 @@ R_API void r_cons_highlight (const char *word) {
 	}
 }
 
-R_API char *r_cons_lastline () {
-	char *b = I.buffer+I.buffer_len;
-	while (b >I.buffer) {
-		if (*b=='\n') {
+R_API char *r_cons_lastline (int *len) {
+	char *b = I.buffer + I.buffer_len;
+	while (b > I.buffer) {
+		if (*b == '\n') {
 			b++;
 			break;
 		}
 		b--;
+	}
+	if (len) {
+		int delta = b - I.buffer;
+		*len = I.buffer_len - delta;
 	}
 	return b;
 }
 
 /* swap color from foreground to background, returned value must be freed */
 R_API char *r_cons_swap_ground(const char *col) {
+	if (!col) {
+		return NULL;
+	}
 	if (!strncmp (col, "\x1b[48;5;", 7)) {
 		/* rgb background */
 		return r_str_newf ("\x1b[38;5;%s", col+7);
@@ -1044,16 +1280,86 @@ R_API bool r_cons_drop (int n) {
 }
 
 R_API void r_cons_chop () {
-	while (I.buffer_len>0) {
-		char ch = I.buffer[I.buffer_len-1];
-		if (ch != '\n' && !IS_WHITESPACE (ch))
+	while (I.buffer_len > 0) {
+		char ch = I.buffer[I.buffer_len - 1];
+		if (ch != '\n' && !IS_WHITESPACE (ch)) {
 			break;
+		}
 		I.buffer_len--;
 	}
 }
 
 R_API void r_cons_bind(RConsBind *bind) {
-	if (!bind) return;
+	if (!bind) {
+		return;
+	}
 	bind->get_size = r_cons_get_size;
 	bind->get_cursor = r_cons_get_cursor;
+}
+
+R_API const char* r_cons_get_rune(const ut8 ch) {
+	if (ch >= RUNECODE_MIN && ch < RUNECODE_MAX) {
+		switch (ch) {
+		case RUNECODE_LINE_HORIZ: return RUNE_LINE_HORIZ;
+		case RUNECODE_LINE_VERT:  return RUNE_LINE_VERT;
+		case RUNECODE_LINE_CROSS: return RUNE_LINE_CROSS;
+		case RUNECODE_CORNER_TL:  return RUNE_CORNER_TL;
+		case RUNECODE_CORNER_TR:  return RUNE_CORNER_TR;
+		case RUNECODE_CORNER_BR:  return RUNE_CORNER_BR;
+		case RUNECODE_CORNER_BL:  return RUNE_CORNER_BL;
+		case RUNECODE_CURVE_CORNER_TL:  return RUNE_CURVE_CORNER_TL;
+		case RUNECODE_CURVE_CORNER_TR:  return RUNE_CURVE_CORNER_TR;
+		case RUNECODE_CURVE_CORNER_BR:  return RUNE_CURVE_CORNER_BR;
+		case RUNECODE_CURVE_CORNER_BL:  return RUNE_CURVE_CORNER_BL;
+		}
+	}
+	return NULL;
+}
+
+R_API void r_cons_breakword(const char *s) {
+	free (I.break_word);
+	if (s) {
+		I.break_word = strdup (s);
+		I.break_word_len = strlen (s);
+	} else {
+		I.break_word = NULL;
+		I.break_word_len = 0;
+	}
+}
+
+/* Prints a coloured help message.
+ * help should be an array of the following form:
+ * {"command", "args", "description",
+ * "command2", "args2", "description"}; */
+R_API void r_cons_cmd_help(const char *help[], bool use_color) {
+	RCons *cons = r_cons_singleton ();
+	const char *pal_args_color = use_color ? cons->pal.args : "",
+			*pal_help_color = use_color ? cons->pal.help : "",
+			*pal_reset = use_color ? cons->pal.reset : "";
+	int i, max_length = 0;
+
+	for (i = 0; help[i]; i += 3) {
+		int len0 = strlen (help[i]);
+		int len1 = strlen (help[i + 1]);
+		if (i) {
+			max_length = R_MAX (max_length, len0 + len1);
+		}
+	}
+
+	for (i = 0; help[i]; i += 3) {
+		if (i) {
+			int padding = max_length - (strlen (help[i]) + strlen (help[i + 1]));
+			r_cons_printf("| %s%s%s%*s  %s%s%s\n",
+					help[i],
+					pal_args_color, help[i + 1],
+					padding, "",
+					pal_help_color, help[i + 2], pal_reset);
+		} else {
+			// no need to indent the first line
+			r_cons_printf ("|%s%s %s%s%s\n",
+					pal_help_color,
+					help[i], help[i + 1], help[i + 2],
+					pal_reset);
+		}
+	}
 }

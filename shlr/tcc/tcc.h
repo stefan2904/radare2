@@ -22,8 +22,10 @@
 #define _TCC_H
 
 #include "r_types.h"
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
-#include "config.h"
+#endif
+#include "tcc_config.h"
 
 #ifdef CONFIG_TCCBOOT
 #include "tccboot.h"
@@ -35,7 +37,9 @@
 #include <stdarg.h>
 #include <string.h>
 #include <errno.h>
+#ifndef _MSC_VER
 #include <math.h>
+#endif
 #include <signal.h>
 #include <fcntl.h>
 #include <setjmp.h>
@@ -48,7 +52,7 @@
 #define TCC_ASSERT(ex)
 #endif
 
-#ifndef _WIN32
+#ifndef __WINDOWS__
 # include <unistd.h>
 # include <sys/time.h>
 # ifndef __HAIKU__
@@ -84,15 +88,20 @@
 #include "stab.h"
 #include "libtcc.h"
 
-#ifndef _WIN32
+#ifndef __WINDOWS__
 #include <inttypes.h>
 #else
 typedef unsigned char uint8_t;
 typedef unsigned short int uint16_t;
 typedef unsigned int uint32_t;
 typedef unsigned long long int uint64_t;
+#ifdef _MSC_VER
+typedef char int8_t;
+typedef long long int int64_t;
+#endif
 #endif
 
+// TODO: Make it dependable from the r2 asm/anal settings
 #define LDOUBLE_SIZE 12
 #define LDOUBLE_ALIGN 4
 #define MAX_ALIGN 8
@@ -166,6 +175,12 @@ typedef uint64_t addr_t;
 #endif
 
 /* -------------------------------------------- */
+
+// TODO: Read this from the configuration variables in r2
+
+#define STACK_NEW0(type, arg) \
+	type arg; \
+	ZERO_FILL(arg)
 
 #define INCLUDE_STACK_SIZE  32
 #define IFDEF_STACK_SIZE    64
@@ -414,6 +429,10 @@ struct TCCState {
     int output_type;
     /* output format, see TCC_OUTPUT_FORMAT_xxx */
     int output_format;
+	/* Target system */
+	char *arch;
+	int bits;
+	char *os;
 
     /* C language options */
     int char_is_unsigned;
@@ -439,9 +458,7 @@ struct TCCState {
     char *init_symbol; /* symbols to call at load-time (not used currently) */
     char *fini_symbol; /* symbols to call at unload-time (not used currently) */
 
-#ifdef TCC_TARGET_I386
     int seg_size; /* 32. Can be 16 with i386 assembler (.code16) */
-#endif
 
     /* include paths */
     char **include_paths;
@@ -748,7 +765,7 @@ enum tcc_token {
 
 #define TOK_UIDENT TOK_DEFINE
 
-#ifdef _WIN32
+#ifdef __WINDOWS__
 #define snprintf _snprintf
 #define vsnprintf _vsnprintf
 #ifndef __GNUC__
@@ -763,7 +780,7 @@ extern float strtof (const char *__nptr, char **__endptr);
 extern long double strtold (const char *__nptr, char **__endptr);
 #endif
 
-#ifdef _WIN32
+#ifdef __WINDOWS__
 #define IS_DIRSEP(c) (c == '/' || c == '\\')
 #define IS_ABSPATH(p) (IS_DIRSEP(p[0]) || (p[0] && p[1] == ':' && IS_DIRSEP(p[2])))
 #define PATHCMP stricmp

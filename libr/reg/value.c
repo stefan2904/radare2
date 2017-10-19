@@ -1,26 +1,82 @@
-/* radare - LGPL - Copyright 2009-2015 - pancake */
+/* radare - LGPL - Copyright 2009-2016 - pancake */
 
 #include <r_reg.h>
 #include <r_util.h>
+
+typedef ut32 ut27;
+static ut27 r_read_me27(const ut8* buf, int boff) {
+        ut27 ret = 0;
+        r_mem_copybits_delta ((ut8*)&ret, 18, buf, boff, 9);
+        r_mem_copybits_delta ((ut8*)&ret, 9, buf, boff + 9, 9);
+        r_mem_copybits_delta ((ut8*)&ret, 0, buf, boff + 18, 9);
+        return ret;
+}
+
+R_API ut64 r_reg_get_value_big(RReg *reg, RRegItem *item, utX *val) {
+	RRegSet *regset;
+	int off;
+	ut64 ret = 0LL;
+	if (!reg || !item) {
+		return 0LL;
+	}
+	off = BITS2BYTES (item->offset);
+	regset = &reg->regset[item->arena];
+	switch (item->size) {
+	case 80: // word + qword
+		if (regset->arena->bytes && (off + 10 <= regset->arena->size)) {
+			val->v80.Low = *((ut64 *)(regset->arena->bytes+off));
+			val->v80.High =*((ut16 *)(regset->arena->bytes+off+8));
+		} else {
+			eprintf ("r_reg_get_value: null or oob arena for current regset\n");
+		}
+		ret = val->v80.Low;
+		break;
+	case 96: // dword + qword
+		if (regset->arena->bytes && (off + 12 <= regset->arena->size)) {
+			val->v96.Low = *((ut64 *)(regset->arena->bytes+off));
+			val->v96.High =*((ut32 *)(regset->arena->bytes+off+8));
+		} else {
+			eprintf ("r_reg_get_value: null or oob arena for current regset\n");
+		}
+		ret = val->v96.Low;
+		break;
+	case 128:// qword + qword
+		if (regset->arena->bytes && (off + 16 <= regset->arena->size)) {
+			val->v128.Low = *((ut64 *)(regset->arena->bytes+off));
+			val->v128.High =*((ut64 *)(regset->arena->bytes+off+8));
+		} else {
+			eprintf ("r_reg_get_value: null or oob arena for current regset\n");
+		}
+		ret = val->v128.Low;
+		break;
+	//case 256:// qword + qword + qword + qword
+	//	break;
+	default:
+		eprintf ("r_reg_get_value_big: Bit size %d not supported\n", item->size);
+		break;
+	}
+	return ret;
+}
 
 R_API ut64 r_reg_get_value(RReg *reg, RRegItem *item) {
 	RRegSet *regset;
 	int off;
 	ut64 ret = 0LL;
-	if (!reg || !item)
+	if (!reg || !item) {
 		return 0LL;
+	}
 	off = BITS2BYTES (item->offset);
-	regset = &reg->regset[item->type];
-#if 0
-	eprintf ("GET sz=%d off %d  off = %d %d\n",
-		item->size, off, item->offset, (item->offset/8));
-#endif
+	regset = &reg->regset[item->arena];
 	switch (item->size) {
 	case 1:
-		ret = (regset->arena->bytes[item->offset / 8] &
-		(1 << (item->offset % 8))) ?
-			1 :
-			0;
+		{
+		int offset = item->offset / 8;
+		if (offset + item->size >= regset->arena->size) {
+			break;
+		}
+		ret = (regset->arena->bytes[offset] &
+		       (1 << (item->offset % 8))) ? 1 : 0;
+		}
 		break;
 	case 4:
 		if (regset->arena->size - off - 1 >= 0) {
@@ -37,15 +93,24 @@ R_API ut64 r_reg_get_value(RReg *reg, RRegItem *item) {
 			ret = r_read_ble16 (regset->arena->bytes + off, reg->big_endian);
 		}
 		break;
+	case 27:
+		if (off + 3 < regset->arena->size) {
+			ret = r_read_me27 (regset->arena->bytes + off, 0);
+		}
+		break;
 	case 32:
 		if (off + 4 <= regset->arena->size) {
 			ret = r_read_ble32 (regset->arena->bytes + off, reg->big_endian);
-		} else eprintf ("r_reg_get_value: 32bit oob read %d\n", off);
+		} else {
+			eprintf ("r_reg_get_value: 32bit oob read %d\n", off);
+		}
 		break;
 	case 64:
 		if (regset->arena->bytes && (off + 8 <= regset->arena->size)) {
 			ret = r_read_ble64 (regset->arena->bytes + off, reg->big_endian);
-		} else eprintf ("r_reg_get_value: null or oob arena for current regset\n");
+		} else {
+			eprintf ("r_reg_get_value: null or oob arena for current regset\n");
+		}
 		break;
 	case 80: // long double
 	case 96: // long floating value
@@ -57,6 +122,11 @@ R_API ut64 r_reg_get_value(RReg *reg, RRegItem *item) {
 		break;
 	}
 	return ret;
+}
+
+R_API ut64 r_reg_get_value_by_role(RReg *reg, RRegisterId role) {
+	// TODO use mapping from RRegisterId to RRegItem (via RRegSet)
+	return r_reg_get_value (reg, r_reg_get (reg, r_reg_get_name (reg, role), -1));
 }
 
 R_API bool r_reg_set_value(RReg *reg, RRegItem *item, ut64 value) {
@@ -74,34 +144,43 @@ R_API bool r_reg_set_value(RReg *reg, RRegItem *item, ut64 value) {
 		r_reg_set_longdouble (reg, item, (long double)value);
 		break;
 	case 64:
-		if (reg->big_endian)
-			r_write_be64(src, value);
-		else
-			r_write_le64(src, value);
+		if (reg->big_endian) {
+			r_write_be64 (src, value);
+		} else {
+			r_write_le64 (src, value);
+		}
 		break;
 	case 32:
-		if (reg->big_endian)
-			r_write_be32(src, value);
-		else
-			r_write_le32(src, value);
+		if (reg->big_endian) {
+			r_write_be32 (src, value);
+		} else {
+			r_write_le32 (src, value);
+		}
 		break;
 	case 16:
-		if (reg->big_endian)
-			r_write_be16(src, value);
-		else
-			r_write_le16(src, value);
+		if (reg->big_endian) {
+			r_write_be16 (src, value);
+		} else {
+			r_write_le16 (src, value);
+		}
 		break;
 	case 8:
-		r_write_ble8(src, (ut8)(value & UT8_MAX));
+		r_write_ble8 (src, (ut8)(value & UT8_MAX));
 		break;
 	case 1:
 		if (value) {
-			ut8 *buf = reg->regset[item->type].arena->bytes + (item->offset / 8);
+			ut8 *buf = reg->regset[item->arena].arena->bytes + (item->offset / 8);
 			int bit = (item->offset % 8);
 			ut8 mask = (1 << bit);
 			buf[0] = (buf[0] & (0xff ^ mask)) | mask;
 		} else {
-			ut8 *buf = reg->regset[item->type].arena->bytes + (item->offset / 8);
+			int idx = item->offset / 8;
+			RRegArena *arena = reg->regset[item->arena].arena;
+			if (idx + item->size > arena->size) {
+				eprintf ("RRegSetOverflow %d vs %d\n", idx + item->size, arena->size);
+				return false;
+			}
+			ut8 *buf = arena->bytes + idx;
 			int bit = item->offset % 8;
 			ut8 mask = 0xff ^ (1 << bit);
 			buf[0] = (buf[0] & mask) | 0;
@@ -111,9 +190,9 @@ R_API bool r_reg_set_value(RReg *reg, RRegItem *item, ut64 value) {
 		eprintf ("r_reg_set_value: Bit size %d not supported\n", item->size);
 		return false;
 	}
-	fits_in_arena = (reg->regset[item->type].arena->size - BITS2BYTES (item->offset) - BITS2BYTES (item->size)) >= 0;
+	fits_in_arena = (reg->regset[item->arena].arena->size - BITS2BYTES (item->offset) - BITS2BYTES (item->size)) >= 0;
 	if (src && fits_in_arena) {
-		r_mem_copybits (reg->regset[item->type].arena->bytes +
+		r_mem_copybits (reg->regset[item->arena].arena->bytes +
 					BITS2BYTES (item->offset),
 				src, item->size);
 		return true;
@@ -122,12 +201,19 @@ R_API bool r_reg_set_value(RReg *reg, RRegItem *item, ut64 value) {
 	return false;
 }
 
+R_API bool r_reg_set_value_by_role(RReg *reg, RRegisterId role, ut64 val) {
+	// TODO use mapping from RRegisterId to RRegItem (via RRegSet)
+	RRegItem *r = r_reg_get (reg, r_reg_get_name (reg, role), -1);
+	return r_reg_set_value (reg, r, val);
+}
+
 R_API ut64 r_reg_set_bvalue(RReg *reg, RRegItem *item, const char *str) {
 	ut64 num = UT64_MAX;
 	if (item && item->flags && str) {
 		num = r_str_bits_from_string (str, item->flags);
-		if (num == UT64_MAX)
+		if (num == UT64_MAX) {
 			num = r_num_math (NULL, str);
+		}
 		r_reg_set_value (reg, item, num);
 	}
 	return num;
@@ -155,8 +241,9 @@ R_API ut64 r_reg_get_pack(RReg *reg, RRegItem *item, int packidx, int packbits) 
 	ut64 ret = 0LL;
 	RRegSet *regset;
 	int off;
-	if (!reg || !item)
+	if (!reg || !item) {
 		return 0LL;
+	}
 	if (packbits < 1) {
 		packbits = item->packed_size;
 	}
@@ -167,7 +254,7 @@ R_API ut64 r_reg_get_pack(RReg *reg, RRegItem *item, int packidx, int packbits) 
 		return 0LL;
 	}
 	off = BITS2BYTES (item->offset);
-	regset = &reg->regset[item->type];
+	regset = &reg->regset[item->arena];
 	off += (packidx * packbytes);
 	if (regset->arena->size - off - 1 >= 0) {
 		memcpy (&ret, regset->arena->bytes + off, packbytes);
@@ -196,8 +283,8 @@ R_API int r_reg_set_pack(RReg *reg, RRegItem *item, int packidx, int packbits, u
 		eprintf ("Invalid bit size for packet register\n");
 		return false;
 	}
-	if (reg->regset[item->type].arena->size - BITS2BYTES (off) - BITS2BYTES (packbytes) >= 0) {
-		ut8 *dst = reg->regset[item->type].arena->bytes + BITS2BYTES (off);
+	if (reg->regset[item->arena].arena->size - BITS2BYTES (off) - BITS2BYTES (packbytes) >= 0) {
+		ut8 *dst = reg->regset[item->arena].arena->bytes + BITS2BYTES (off);
 		r_mem_copybits (dst, (ut8 *)&val, packbytes);
 		return true;
 	}

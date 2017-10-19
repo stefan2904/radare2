@@ -1,4 +1,4 @@
-.Dd Apr 5, 2016
+.Dd Jul 28, 2017
 .Dt RAX2 1
 .Sh NAME
 .Nm rax2
@@ -21,12 +21,14 @@ Keep the same base as the input data
 Swap endian.
 .It Fl F
 Read C strings from stdin and output in hexpairs. Useful to load shellcodes
+.It Fl l
+Append newline to the decoded output for human friendly-ness
 .It Fl K
 Show randomart key asciiart for values or hexpairs
 .It Fl s
 Convert from hex string to character (rax2 \-s 43 4a 50)
 .It Fl S
-Convert from hex string to character (rax2 \-S C J P)
+Convert from character to hex string (rax2 \-S C J P)
 .It Fl n
 Show hexpairs from integer value
 .It Fl N

@@ -7,8 +7,8 @@
 #include "ins.h"
 #include "utils.h"
 
-st8 *get_tc2_tc1(ut32 ins_bits) {
-	st8 *res = "tc1";
+char *get_tc2_tc1(ut32 ins_bits) {
+	char *res = "tc1";
 	if (ins_bits) {
 		if (ins_bits != 1) {
 			fprintf(stderr, "Invalid instruction TC2 or TC1 (%d)\n", ins_bits);
@@ -19,8 +19,8 @@ st8 *get_tc2_tc1(ut32 ins_bits) {
 	return strdup (res);
 }
 
-st8 *get_trans_reg(ut32 ins_bits) {
-	st8 *res = NULL;
+char *get_trans_reg(ut32 ins_bits) {
+	char *res = NULL;
 
 	switch (ins_bits) {
 	case 6:
@@ -49,20 +49,17 @@ st8 *get_trans_reg(ut32 ins_bits) {
 		break;
 
 	default:
-		fprintf(stderr, "Invalid transaction instruction 0x%x\n", ins_bits);
+		fprintf (stderr, "Invalid transaction instruction 0x%x\n", ins_bits);
 	}
-	if(res != NULL)
-		res = strdup(res);
-
-	return res;
+	return res? strdup (res): NULL;
 }
 
-st8 *get_AR_regs_class1(ut32 ins_bits) {
+char *get_AR_regs_class1(ut32 ins_bits) {
 	ut32 op = (ins_bits >> 4) & 7;
-	st8 *res = (st8 *)malloc(50);
-	if (!res)
+	char *res = (char *)calloc (1, 50);
+	if (!res) {
 		return NULL;
-	memset (res, 0, 50);
+	}
 	switch (op) {
 	case 0:
 		sprintf(res, "*ar-%ld", (long int)ins_bits & 0xF);
@@ -92,136 +89,144 @@ st8 *get_AR_regs_class1(ut32 ins_bits) {
 	return res;
 }
 
-st8 *get_AR_regs_class2(ut32 ins_bits, ut32 *ret_len, ut32 ins_pos, ut32 idx) {
+char *get_AR_regs_class2(ut32 ins_bits, ut32 *ret_len, ut32 ins_pos, ut32 idx) {
 	ut8 op, op2, reg_num, type;
-	st8 *res = NULL;
+	char *res = NULL;
 
 	op = ins_bits >> 6;
 	op2 = ins_bits & 3;
-
 	reg_num = (ins_bits >> 2) & 0xF;
-
-	if (ret_len)
+	if (ret_len) {
 		*ret_len = 0;
-
+	}
 	//printf("OP1 %x OP2 0x%x %x\n", op, op2, reg_num);
-
-	res = (st8 *)malloc(50);
+	res = malloc(50);
+	if (!res) {
+		return NULL;
+	}	
 	if(op2 == 2) {
-		if(op) sprintf(res, "*ar%ld(short(#0x%lx))",
-			(long int)reg_num, (long int)idx * op);
-		else sprintf(res, "*ar%ld", (long int)reg_num);
+		if(op) {
+			sprintf (res, "*ar%ld(short(#0x%lx))",
+				 (long int)reg_num, (long int)idx * op);
+		} else {
+			sprintf(res, "*ar%ld", (long int)reg_num);
+		}
 	} else {
 		type = (op >> 3 | 2 * op2);
 		if(type == 6) {
 			sprintf(res, "@#0x%lx", (long int)idx * (reg_num | 16 * (op & 7)));
-
 		} else if(type == 7) {
 			sprintf(res, "*sp(#0x%lx)", (long int)idx * (reg_num | 16 * (op & 7)));
 		} else {
 			type = idx | 16 * op;
 			switch(type) {
-				case 0:
-					sprintf(res, "*ar%ld-", (long int)reg_num);
-					break;
-				case 1:
-					sprintf(res, "*ar%ld+", (long int)reg_num);
-					break;
-				case 2:
-					sprintf(res, "*ar%ld(t0)", (long int)reg_num);
-					break;
-				case 3:
-					sprintf(res, "*ar%ld(t1)", (long int)reg_num);
-					break;
-				case 4:
-					sprintf(res, "*(ar%ld-t0)", (long int)reg_num);
-					break;
-				case 5:
-					sprintf(res, "*(ar%ld-t1)", (long int)reg_num);
-					break;
-				case 6:
-					sprintf(res, "*(ar%ld+t0)", (long int)reg_num);
-					break;
-				case 7:
-					sprintf(res, "*(ar%ld+t1)", (long int)reg_num);
-					break;
-				case 8:
-					sprintf(res, "*-ar%ld", (long int)reg_num);
-					break;
-				case 9:
-					sprintf(res, "*+ar%ld", (long int)reg_num);
-					break;
-				case 10:
-					sprintf(res, "*ar%ld(t2)", (long int)reg_num);
-					break;
-				case 11:
-					sprintf(res, "*ar%ld(t3)", (long int)reg_num);
-					break;
-				case 12:
-					sprintf(res, "*(ar%ld-t2)", (long int)reg_num);
-					break;
-				case 13:
-					sprintf(res, "*(ar%ld-t3)", (long int)reg_num);
-					break;
-				case 14:
-					sprintf(res, "*(ar%ld+t2)", (long int)reg_num);
-					break;
-				case 15:
-					sprintf(res, "*(ar%ld+t3)", (long int)reg_num);
-					break;
-				case 16:
-					sprintf(res, "*(ar%ld-t0b)", (long int)reg_num);
-					break;
-				case 17:
-					sprintf(res, "*(ar%ld+t0b)", (long int)reg_num);
-					break;
-				case 18:
-					sprintf(res, "*ar%ld(t0<<#1)", (long int)reg_num);
-					break;
-				case 19:
-					sprintf(res, "*ar%ld(t1<<#1)", (long int)reg_num);
-					break;
-				case 23:
-					sprintf(res, "*ar%ld(xar15)", (long int)reg_num);
-					break;
+			case 0:
+				sprintf(res, "*ar%ld-", (long int)reg_num);
+				break;
+			case 1:
+				sprintf(res, "*ar%ld+", (long int)reg_num);
+				break;
+			case 2:
+				sprintf(res, "*ar%ld(t0)", (long int)reg_num);
+				break;
+			case 3:
+				sprintf(res, "*ar%ld(t1)", (long int)reg_num);
+				break;
+			case 4:
+				sprintf(res, "*(ar%ld-t0)", (long int)reg_num);
+				break;
+			case 5:
+				sprintf(res, "*(ar%ld-t1)", (long int)reg_num);
+				break;
+			case 6:
+				sprintf(res, "*(ar%ld+t0)", (long int)reg_num);
+				break;
+			case 7:
+				sprintf(res, "*(ar%ld+t1)", (long int)reg_num);
+				break;
+			case 8:
+				sprintf(res, "*-ar%ld", (long int)reg_num);
+				break;
+			case 9:
+				sprintf(res, "*+ar%ld", (long int)reg_num);
+				break;
+			case 10:
+				sprintf(res, "*ar%ld(t2)", (long int)reg_num);
+				break;
+			case 11:
+				sprintf(res, "*ar%ld(t3)", (long int)reg_num);
+				break;
+			case 12:
+				sprintf(res, "*(ar%ld-t2)", (long int)reg_num);
+				break;
+			case 13:
+				sprintf(res, "*(ar%ld-t3)", (long int)reg_num);
+				break;
+			case 14:
+				sprintf(res, "*(ar%ld+t2)", (long int)reg_num);
+				break;
+			case 15:
+				sprintf(res, "*(ar%ld+t3)", (long int)reg_num);
+				break;
+			case 16:
+				sprintf(res, "*(ar%ld-t0b)", (long int)reg_num);
+				break;
+			case 17:
+				sprintf(res, "*(ar%ld+t0b)", (long int)reg_num);
+				break;
+			case 18:
+				sprintf(res, "*ar%ld(t0<<#1)", (long int)reg_num);
+				break;
+			case 19:
+				sprintf(res, "*ar%ld(t1<<#1)", (long int)reg_num);
+				break;
+			case 23:
+				sprintf(res, "*ar%ld(xar15)", (long int)reg_num);
+				break;
 
+			case 24:
+			case 25:
+			case 26:
+			case 27:
+				idx = get_ins_part(ins_pos, 2);
+				if(ret_len) {
+					*ret_len = 2;
+				}
+				switch (type) {
 				case 24:
+					sprintf(res, "*ar%ld(#%ld)", (long int)reg_num, (long int)op * idx);
+					break;
 				case 25:
+					sprintf(res, "*+ar%ld(#%ld)", (long int)reg_num, (long int)op * idx);
+					break;
 				case 26:
-				case 27:
-					idx = get_ins_part(ins_pos, 2);
-					if(ret_len)
-						*ret_len = 2;
-
-					if(type == 24) {
-						sprintf(res, "*ar%ld(#%ld)", (long int)reg_num, (long int)op * idx);
-					} else if(type == 25) {
-						sprintf(res, "*+ar%ld(#%ld)", (long int)reg_num, (long int)op * idx);
-					} else if(type == 26) {
-						sprintf(res, "*abs16(#0x%lx)", (long int)idx);
-					} else {
-						sprintf(res, "*port(#0x%lx)",  (long int)idx);
-					}
+					sprintf(res, "*abs16(#0x%lx)", (long int)idx);
 					break;
-
+				default:
+					sprintf(res, "*port(#0x%lx)",  (long int)idx);
+					break;
+				}
+				break;
+			case 28:
+			case 29:
+			case 30:
+				idx = get_ins_part(ins_pos, 3);
+				if(ret_len) {
+					*ret_len = 3;
+				}
+				switch (type) {
 				case 28:
-				case 29:
-				case 30:
-
-					idx = get_ins_part(ins_pos, 3);
-					if(ret_len)
-						*ret_len = 3;
-
-					if(type == 28) {
-						sprintf(res, "*ar%ld(#0x%lx)", (long int)reg_num, (long int)idx * op);
-
-					} else if(type == 29) {
-						sprintf(res, "*+ar%ld(#0x%lx)", (long int)reg_num, (long int)idx * op);
-					} else {
-						sprintf(res, "*(#0x%lx)", (long int)idx);
-					}
-
+					sprintf(res, "*ar%ld(#0x%lx)", (long int)reg_num, (long int)idx * op);
 					break;
+				case 29:
+					sprintf(res, "*+ar%ld(#0x%lx)", (long int)reg_num, (long int)idx * op);
+					break;
+				default:
+					sprintf(res, "*(#0x%lx)", (long int)idx);
+					break;
+				}
+
+				break;
 			}
 		}
 	}
@@ -229,8 +234,8 @@ st8 *get_AR_regs_class2(ut32 ins_bits, ut32 *ret_len, ut32 ins_pos, ut32 idx) {
 	return res;
 }
 
-st8 *get_reg_pair(ut32 idx) {
-	st8 *res = NULL;
+char *get_reg_pair(ut32 idx) {
+	char *res = NULL;
 
 	switch (idx) {
 	case 1: res = "ac0, ac2"; break;
@@ -259,8 +264,8 @@ st8 *get_reg_pair(ut32 idx) {
 	return res;
 }
 
-st8 *get_reg_name_3(ut32 idx) {
-	st8 *res = NULL;
+char *get_reg_name_3(ut32 idx) {
+	char *res = NULL;
 
 	switch (idx) {
 	case 0: res = "ac0"; break;
@@ -323,8 +328,8 @@ st8 *get_reg_name_3(ut32 idx) {
 }
 
 
-st8 *get_reg_name_2(ut32 idx) {
-	st8 *res = NULL;
+char *get_reg_name_2(ut32 idx) {
+	char *res = NULL;
 
 	switch (idx) {
 	case 0: res = "ar0"; break;
@@ -378,8 +383,8 @@ st8 *get_reg_name_2(ut32 idx) {
 	return res;
 }
 
-st8 *get_reg_name_1(ut32 idx) {
-	st8 *res = NULL;
+char *get_reg_name_1(ut32 idx) {
+	char *res = NULL;
 
 	switch (idx) {
 	case 0: res = "ac0"; break;
@@ -558,7 +563,7 @@ st8 *get_reg_name_1(ut32 idx) {
 	case 186: res = "bsa45"; break;
 	case 187: res = "bsa67"; break;
 	case 188: res = "bsac"; break;
-	case 189: //res = (st8 *)&off_42FBE8;
+	case 189: //res = (char *)&off_42FBE8;
 		res = "bkc";
 		break;
 	case 190: res = "bk03"; break;
@@ -633,10 +638,8 @@ st8 *get_reg_name_1(ut32 idx) {
 }
 
 
-st8 *get_status_regs_and_bits(st8 *reg_arg, int reg_bit)
-{
-  st8 *res = NULL;
-
+char *get_status_regs_and_bits(char *reg_arg, int reg_bit) {
+  char *res = NULL;
   if(!strncmp(reg_arg, "ST0", 3)) {
     switch(reg_bit) {
 	case 0:
@@ -850,320 +853,279 @@ st8 *get_status_regs_and_bits(st8 *reg_arg, int reg_bit)
 }
 
 
-st8 *get_reg_name_4(ut32 idx)
-{
-  st8 *res = NULL;
+char *get_reg_name_4(ut32 idx) {
+	char *res = NULL;
 
-  switch(idx) {
-
-    case 0:
-      res = "ac0";
-      break;
-    case 1:
-      res = "ac1";
-      break;
-    case 2:
-      res = "ac2";
-      break;
-    case 3:
-      res = "ac3";
-      break;
-    case 4:
-      res = "ac4";
-      break;
-    case 5:
-      res = "ac5";
-      break;
-    case 6:
-      res = "ac6";
-      break;
-    case 7:
-      res = "ac7";
-      break;
-    case 8:
-      res = "t0";
-      break;
-    case 9:
-      res = "t1";
-      break;
-    case 10:
-      res = "t2";
-      break;
-    case 11:
-      res = "t3";
-      break;
-    case 16:
-      res = "ar0";
-      break;
-    case 17:
-      res = "ar1";
-      break;
-    case 18:
-      res = "ar2";
-      break;
-    case 19:
-      res = "ar3";
-      break;
-    case 20:
-      res = "ar4";
-      break;
-    case 21:
-      res = "ar5";
-      break;
-    case 22:
-      res = "ar6";
-      break;
-    case 23:
-      res = "ar7";
-      break;
-    case 24:
-      res = "ac0.l";
-      break;
-    case 25:
-      res = "ac1.l";
-      break;
-    case 26:
-      res = "ac2.l";
-      break;
-    case 27:
-      res = "ac3.l";
-      break;
-    case 28:
-      res = "ac4.l";
-      break;
-    case 29:
-      res = "ac5.l";
-      break;
-    case 30:
-      res = "ac6.l";
-      break;
-    case 31:
-      res = "ac7.l";
-      break;
-  }
-
-  if(res != NULL)
-	res = strdup(res);
-
-  return res;
+	switch (idx) {
+	case 0:
+		res = "ac0";
+		break;
+	case 1:
+		res = "ac1";
+		break;
+	case 2:
+		res = "ac2";
+		break;
+	case 3:
+		res = "ac3";
+		break;
+	case 4:
+		res = "ac4";
+		break;
+	case 5:
+		res = "ac5";
+		break;
+	case 6:
+		res = "ac6";
+		break;
+	case 7:
+		res = "ac7";
+		break;
+	case 8:
+		res = "t0";
+		break;
+	case 9:
+		res = "t1";
+		break;
+	case 10:
+		res = "t2";
+		break;
+	case 11:
+		res = "t3";
+		break;
+	case 16:
+		res = "ar0";
+		break;
+	case 17:
+		res = "ar1";
+		break;
+	case 18:
+		res = "ar2";
+		break;
+	case 19:
+		res = "ar3";
+		break;
+	case 20:
+		res = "ar4";
+		break;
+	case 21:
+		res = "ar5";
+		break;
+	case 22:
+		res = "ar6";
+		break;
+	case 23:
+		res = "ar7";
+		break;
+	case 24:
+		res = "ac0.l";
+		break;
+	case 25:
+		res = "ac1.l";
+		break;
+	case 26:
+		res = "ac2.l";
+		break;
+	case 27:
+		res = "ac3.l";
+		break;
+	case 28:
+		res = "ac4.l";
+		break;
+	case 29:
+		res = "ac5.l";
+		break;
+	case 30:
+		res = "ac6.l";
+		break;
+	case 31:
+		res = "ac7.l";
+		break;
+	}
+	return res? strdup (res): NULL;
 }
 
-st8 *get_opers(ut8 oper_byte)
-{
-  st8 *res = NULL;
-  ut8 oper_type = 0x00;
-  st8 *reg_name = NULL;
+char *get_opers(ut8 oper_byte) {
+	char *res = NULL;
+	ut8 oper_type = 0x00;
+	char *reg_name = NULL;
 
-  switch (oper_byte) {
-    case 0xE0u:
-      res = strdup("overflow(ac0)");
-      break;
-
-    case 0xE1u:
-      res = strdup("overflow(ac1)");
-      break;
-
-    case 0xE2u:
-      res = strdup("overflow(ac2)");
-      break;
-
-    case 0xE3u:
-      res = strdup("overflow(ac3)");
-      break;
-
-    case 0xE4u:
-      res = strdup("tc1");
-      break;
-
-    case 0xE5u:
-      res = strdup("tc2");
-      break;
-
-    case 0xE6u:
-      res = strdup("carry");
-      break;
-
-    case 0xE7u:
-      res = strdup("overflow(govf)");
-      break;
-
-    case 0xE8u:
-      res = strdup("tc1 & tc2");
-      break;
-
-    case 0xE9u:
-      res = strdup("tc1 & !tc2");
-      break;
-
-    case 0xEAu:
-      res = strdup("!tc1 & tc2");
-      break;
-
-    case 0xEBu:
-      res = strdup("!tc1 & !tc2");
-      break;
-
-    case 0xECu:
-      res = strdup("word_mode");
-      break;
-
-    case 0xEDu:
-      res = strdup("byte_mode");
-      break;
-
-    case 0xF0u:
-      res = strdup("!overflow(ac0)");
-      break;
-
-    case 0xF1u:
-      res = strdup("!overflow(ac1)");
-      break;
-
-    case 0xF2u:
-      res = strdup("!overflow(ac2)");
-      break;
-
-    case 0xF3u:
-      res = strdup("!overflow(ac3)");
-      break;
-
-    case 0xF4u:
-      res = strdup("!tc1");
-      break;
-
-    case 0xF5u:
-      res = strdup("!tc2");
-      break;
-
-    case 0xF6u:
-      res = strdup("!carry");
-      break;
-
-    case 0xF7u:
-      res = strdup("!overflow(govf)");
-      break;
-
-    case 0xF8u:
-      res = strdup("tc1 | tc2");
-      break;
-
-    case 0xF9u:
-      res = strdup("tc1 | !tc2");
-      break;
-
-    case 0xFAu:
-      res = strdup("!tc1 | tc2");
-      break;
-
-    case 0xFBu:
-      res = strdup("!tc1 | !tc2");
-      break;
-
-    case 0xFCu:
-      res = strdup("tc1 ^ tc2");
-      break;
-
-    case 0xFDu:
-      res = strdup("tc1 ^ !tc2");
-      break;
-
-    case 0xFEu:
-      res = strdup("!tc1 ^ tc2");
-      break;
-
-    case 0xFFu:
-      res = strdup("!tc1 ^ !tc2");
-      break;
-
+	switch (oper_byte) {
+	case 0xE0u:
+		res = strdup ("overflow(ac0)");
+		break;
+	case 0xE1u:
+		res = strdup ("overflow(ac1)");
+		break;
+	case 0xE2u:
+		res = strdup ("overflow(ac2)");
+		break;
+	case 0xE3u:
+		res = strdup ("overflow(ac3)");
+		break;
+	case 0xE4u:
+		res = strdup ("tc1");
+		break;
+	case 0xE5u:
+		res = strdup ("tc2");
+		break;
+	case 0xE6u:
+		res = strdup ("carry");
+		break;
+	case 0xE7u:
+		res = strdup ("overflow(govf)");
+		break;
+	case 0xE8u:
+		res = strdup ("tc1 & tc2");
+		break;
+	case 0xE9u:
+		res = strdup ("tc1 & !tc2");
+		break;
+	case 0xEAu:
+		res = strdup ("!tc1 & tc2");
+		break;
+	case 0xEBu:
+		res = strdup ("!tc1 & !tc2");
+		break;
+	case 0xECu:
+		res = strdup ("word_mode");
+		break;
+	case 0xEDu:
+		res = strdup ("byte_mode");
+		break;
+	case 0xF0u:
+		res = strdup ("!overflow(ac0)");
+		break;
+	case 0xF1u:
+		res = strdup ("!overflow(ac1)");
+		break;
+	case 0xF2u:
+		res = strdup ("!overflow(ac2)");
+		break;
+	case 0xF3u:
+		res = strdup ("!overflow(ac3)");
+		break;
+	case 0xF4u:
+		res = strdup ("!tc1");
+		break;
+	case 0xF5u:
+		res = strdup ("!tc2");
+		break;
+	case 0xF6u:
+		res = strdup ("!carry");
+		break;
+	case 0xF7u:
+		res = strdup ("!overflow(govf)");
+		break;
+	case 0xF8u:
+		res = strdup ("tc1 | tc2");
+		break;
+	case 0xF9u:
+		res = strdup ("tc1 | !tc2");
+		break;
+	case 0xFAu:
+		res = strdup ("!tc1 | tc2");
+		break;
+	case 0xFBu:
+		res = strdup ("!tc1 | !tc2");
+		break;
+	case 0xFCu:
+		res = strdup ("tc1 ^ tc2");
+		break;
+	case 0xFDu:
+		res = strdup ("tc1 ^ !tc2");
+		break;
+	case 0xFEu:
+		res = strdup ("!tc1 ^ tc2");
+		break;
+	case 0xFFu:
+		res = strdup("!tc1 ^ !tc2");
+		break;
 	default:
 		oper_type = oper_byte >> 5;
 		if (oper_type != 6 ) {
-			reg_name = get_reg_name_4(oper_byte & 0x1F);
-		    switch (oper_type)
-	        {
+			reg_name = get_reg_name_4 (oper_byte & 0x1F);
+			switch (oper_type) {
 			case 1u:
-				res = strcat_dup(reg_name, " != #0", 1);
+				res = strcat_dup (reg_name, " != #0", 1);
 				break;
 			case 0u:
-				res = strcat_dup(reg_name, " == #0", 1);
+				res = strcat_dup (reg_name, " == #0", 1);
 				break;
 			case 2u:
-				res =  strcat_dup(reg_name, " < #0", 1);
+				res =  strcat_dup (reg_name, " < #0", 1);
 				break;
 			case 3u:
-				res =  strcat_dup(reg_name, " >= #0", 1);
+				res =  strcat_dup (reg_name, " >= #0", 1);
 				break;
 			case 4u:
-				res =  strcat_dup(reg_name, " > #0", 1);
+				res =  strcat_dup (reg_name, " > #0", 1);
 				break;
 			case 5u:
-				res =  strcat_dup(reg_name, " <= #0", 1);
+				res =  strcat_dup (reg_name, " <= #0", 1);
 			}
 			//TODO: still can leak
 			return res;
 		}
-		reg_name = get_reg_name_1((oper_byte & 0xF) + 128);
+		reg_name = get_reg_name_1 ((oper_byte & 0xF) + 128);
 		oper_type = (oper_byte >> 4) - 12;
 		if (oper_type) {
-			if ( oper_type != 1 ) {
+			if (oper_type != 1) {
 				free (reg_name);
 				return NULL;
 			}
-			res = strcat_dup(reg_name, " != #0", 1);
+			res = strcat_dup (reg_name, " != #0", 1);
 		} else {
-			res = strcat_dup(reg_name, " == #0", 1);
+			// coverity may complain but strcat_dup set to null
+			// reg_name when free
+			res = strcat_dup (reg_name, " == #0", 1);
 		}
-    }
-
-    return res;
+	}
+	free (reg_name);
+	return res;
 }
 
-st8 *get_cmp_op(ut32 idx) {
-	st8 *res = NULL;
-
+char *get_cmp_op(ut32 idx) {
+	const char *res = NULL;
 	switch (idx) {
 	case 0: res = "=="; break;
 	case 1: res = "!="; break;
 	case 2: res = "<"; break;
 	case 3: res = ">="; break;
 	}
-
-	if (res != NULL)
-		res = strdup(res);
-	return res;
+	return res? strdup (res): NULL;
 }
 
-st8 *get_sim_reg(st8 *reg_arg, ut32 ins_bits) {
+char *get_sim_reg (char *reg_arg, ut32 ins_bits) {
 	st32 code;
-	st8 *res = NULL;
-	st8 *aux;
-
+	char *res = NULL;
+	char *aux;
 	code = ins_bits & 3;
 	switch (code) {
 	case 0:
-		if(reg_arg && strchr(reg_arg, 'w')) {
-			if(code == 62)
-				return strdup("sim0");
-
-			if(code == 63)
-				return strdup("sim0");
+		if(reg_arg && strchr (reg_arg, 'w')) {
+			if(code == 62) {
+				return strdup ("sim0");
+			}
+			if(code == 63) {
+				return strdup ("sim0");
+			}
 		}
-		aux = get_reg_name_1(ins_bits >> 2);
-		res = strcat_dup("@", aux, 2);
+		aux = get_reg_name_1 (ins_bits >> 2);
+		res = strcat_dup ("@", aux, 2);
 		break;
 	case 2:
-		aux = (st8 *)malloc(50);
-		if(!aux)
+		aux = (char *)calloc (1, 50);
+		if (!aux) {
 			return NULL;
-
-		sprintf(aux, "@#0x%x", code);
+		}
+		sprintf (aux, "@#0x%x", code);
 		res = aux;
 		break;
 	case 1:
 	case 3:
-		res = strdup("<reserved>");
+		res = strdup ("<reserved>");
 		break;
 	}
-
 	return res;
 }

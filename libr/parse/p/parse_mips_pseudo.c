@@ -6,17 +6,21 @@
 
 #include <r_lib.h>
 #include <r_util.h>
-#include <r_flags.h>
+#include <r_flag.h>
 #include <r_anal.h>
 #include <r_parse.h>
 
 static int can_replace(const char *str, int idx, int max_operands) {
-	int ret = true;
-	if (str[idx] > '9' || str[idx] < '1') ret = false;
-	if (str[idx + 1] != '\x00' && str[idx + 1] <= '9' && str[idx + 1] >= '1')
-		ret = false;
-	if ((int)((int)str[idx] - 0x30) > max_operands) ret = false;
-	return ret;
+	if (str[idx] > '9' || str[idx] < '1') {
+		return false;
+	}
+	if (str[idx + 1] != '\x00' && str[idx + 1] <= '9' && str[idx + 1] >= '1') {
+		return false;
+	}
+	if ((int)((int)str[idx] - 0x30) > max_operands) {
+		return false;
+	}
+	return true;
 }
 
 static int replace(int argc, const char *argv[], char *newstr) {
@@ -83,6 +87,7 @@ static int replace(int argc, const char *argv[], char *newstr) {
 		{ "subu",  "1 = 2 - 3", 3},
 		{ "sub",  "1 = 2 - 3", 3},
 		{ "sw",  "[3 + 2] = 1", 3},
+		{ "syscall",  "syscall", 0},
 		{ "xor",  "1 = 2 ^ 3", 3},
 		{ "xori",  "1 = 2 ^ 3", 3},
 		{ NULL }
@@ -182,6 +187,8 @@ static int parse(RParse *p, const char *data, char *str) {
 					}
 				}
 			}
+		} else {
+			strncpy (w0, buf, WSZ - 1);
 		}
 		{
 			const char *wa[] = { w0, w1, w2, w3, w4 };
@@ -194,7 +201,7 @@ static int parse(RParse *p, const char *data, char *str) {
 {
 	char *p = strdup (str);
 	p = r_str_replace (p, "+ -", "- ", 0);
-	p = r_str_replace(p, " + ]", " + 0]", 0);
+	p = r_str_replace (p, " + ]", " + 0]", 0);
 #if EXPERIMENTAL_ZERO
 	p = r_str_replace (p, "zero", "0", 0);
 	if (!memcmp (p, "0 = ", 4)) *p = 0; // nop

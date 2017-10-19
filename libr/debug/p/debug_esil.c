@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2013-2015 pancake */
+/* radare - LGPL - Copyright 2013-2017 pancake */
 // r2 -Desil ls
 
 #include <r_asm.h>
@@ -25,7 +25,7 @@ static int __esil_step(RDebug *dbg) {
 	ut64 pc = 0LL; // getreg("pc")
 	RAnalOp op;
 
-	pc = r_debug_reg_sync(dbg, R_REG_TYPE_GPR, 0);
+	pc = r_debug_reg_sync(dbg, R_REG_TYPE_GPR, false);
 	pc = r_debug_reg_get (dbg, "PC");
 	eprintf ("PC = 0x%" PFMT64x "\n", pc);
 /// XXX. hack to trick vaddr issue
@@ -110,12 +110,12 @@ static char *__esil_reg_profile(RDebug *dbg) {
 	return r_anal_get_reg_profile (dbg->anal);
 }
 
-static int __esil_breakpoint (RBreakpointItem *bp, int set, void *user) {
+static int __esil_breakpoint (RBreakpoint *bp, RBreakpointItem *b, bool set) {
 	//r_io_system (dbg->iob.io, "db");
 	return false;
 }
 
-static int __esil_kill(RDebug *dbg, int pid, int tid, int sig) {
+static bool __esil_kill(RDebug *dbg, int pid, int tid, int sig) {
 	// TODO: ESIL reset
 	return true;
 }
@@ -136,7 +136,6 @@ static int __reg_read (RDebug *dbg, int type, ut8 *buf, int size) {
 
 RDebugPlugin r_debug_plugin_esil = {
 	.name = "esil",
-	.keepio = 1,
 	.license = "LGPL3",
 	.arch = "any", // TODO: exception!
 	.bits = R_SYS_BITS_32 | R_SYS_BITS_64,
@@ -150,13 +149,13 @@ RDebugPlugin r_debug_plugin_esil = {
 	.wait = &__esil_wait,
 	.stop = __esil_stop,
 	.kill = __esil_kill,
-	.breakpoint = &__esil_breakpoint,
+	.breakpoint = (RBreakpointCallback)&__esil_breakpoint,
 	.reg_profile = __esil_reg_profile,
 	.reg_read = __reg_read,
 };
 
 #ifndef CORELIB
-struct r_lib_struct_t radare_plugin = {
+RLibStruct radare_plugin = {
 	.type = R_LIB_TYPE_DBG,
 	.data = &r_debug_plugin_esil,
 	.version = R2_VERSION

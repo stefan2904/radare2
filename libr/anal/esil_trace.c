@@ -36,11 +36,11 @@ static int trace_hook_reg_read(RAnalEsil *esil, const char *name, ut64 *res, int
 	return ret;
 }
 
-static int trace_hook_reg_write(RAnalEsil *esil, const char *name, ut64 val) {
+static int trace_hook_reg_write(RAnalEsil *esil, const char *name, ut64 *val) {
 	int ret = 0;
-	//eprintf ("[ESIL] REG WRITE %s 0x%08"PFMT64x"\n", name, val);
+	//eprintf ("[ESIL] REG WRITE %s 0x%08"PFMT64x"\n", name, *val);
 	sdb_array_add (DB, KEY ("reg.write"), name, 0);
-	sdb_num_set (DB, KEYREG ("reg.write", name), val, 0);
+	sdb_num_set (DB, KEYREG ("reg.write", name), *val, 0);
 	if (ocbs.hook_reg_write) {
 		RAnalEsilCallbacks cbs = esil->cb;
 		esil->cb = ocbs;
@@ -91,7 +91,7 @@ static int trace_hook_mem_write(RAnalEsil *esil, ut64 addr, const ut8 *buf, int 
 
 R_API void r_anal_esil_trace (RAnalEsil *esil, RAnalOp *op) {
 	const char *expr = r_strbuf_get (&op->esil);
-	int esil_debug = esil->debug;
+	int esil_verbose = esil->verbose;
 	if (ocbs_set) {
 		eprintf ("cannot call recursively\n");
 	}
@@ -108,7 +108,7 @@ R_API void r_anal_esil_trace (RAnalEsil *esil, RAnalOp *op) {
 	//eprintf ("[ESIL] OPCODE %s\n", op->mnemonic);
 	//eprintf ("[ESIL] EXPR = %s\n", expr);
 	/* set hooks */
-	esil->debug = 0;
+	esil->verbose = 0;
 	esil->cb.hook_reg_read = trace_hook_reg_read;
 	esil->cb.hook_reg_write = trace_hook_reg_write;
 	esil->cb.hook_mem_read = trace_hook_mem_read;
@@ -118,13 +118,18 @@ R_API void r_anal_esil_trace (RAnalEsil *esil, RAnalOp *op) {
 	/* restore hooks */
 	esil->cb = ocbs;
 	ocbs_set = false;
-	esil->debug = esil_debug;
+	esil->verbose = esil_verbose;
 	esil->trace_idx ++;
 }
 
 R_API void r_anal_esil_trace_list (RAnalEsil *esil) {
-	/* TODO. make output more userfriendly */
-	sdb_list (esil->db_trace);
+	SdbKv *kv;
+	SdbListIter *iter;
+	SdbList *list = sdb_foreach_list (esil->db_trace, true);
+	ls_foreach (list, iter, kv) {
+		eprintf ("%s=%s\n", kv->key, kv->value);
+	}
+	ls_free (list);
 }
 
 R_API void r_anal_esil_trace_show(RAnalEsil *esil, int idx) {

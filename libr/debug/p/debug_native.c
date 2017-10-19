@@ -1,14 +1,14 @@
-/* radare - LGPL - Copyright 2009-2016 - pancake */
+/* radare - LGPL - Copyright 2009-2017 - pancake */
 
 #include <r_userconf.h>
 #include <r_debug.h>
 #include <r_asm.h>
+#include <r_core.h>
 #include <r_reg.h>
 #include <r_lib.h>
 #include <r_anal.h>
 #include <signal.h>
 #include <sys/types.h>
-#include <sys/param.h>
 
 #if DEBUGGER
 
@@ -18,12 +18,13 @@
 static int r_debug_native_continue (RDebug *dbg, int pid, int tid, int sig);
 static int r_debug_native_reg_read (RDebug *dbg, int type, ut8 *buf, int size);
 static int r_debug_native_reg_write (RDebug *dbg, int type, const ut8* buf, int size);
+static void r_debug_native_stop(RDebug *dbg);
 
 #include "native/bt.c"
 
 #if __UNIX__ || __CYGWIN__
 # include <errno.h>
-# if !defined (__HAIKU__) && !defined (__CYGWIN__)
+# if !defined (__HAIKU__) && !defined (__CYGWIN__) && !defined (__sun)
 #  include <sys/ptrace.h>
 # endif
 # include <sys/wait.h>
@@ -67,6 +68,7 @@ static int r_debug_native_reg_write (RDebug *dbg, int type, const ut8* buf, int 
 # warning No debugger support for SunOS yet
 
 #elif __linux__
+#include <sys/mman.h>
 #include "native/linux/linux_debug.h"
 #include "native/procfs.h"
 # ifdef __ANDROID__
@@ -75,7 +77,7 @@ static int r_debug_native_reg_write (RDebug *dbg, int type, const ut8* buf, int 
 #   define WIFCONTINUED(s) ((s) == 0xffff)
 #  endif
 # endif
-#if (__x86_64__ || __i386__) && !defined(__ANDROID__)
+#if (__x86_64__ || __i386__ || __arm__ || __arm64__) && !defined(__ANDROID__)
 #include "native/linux/linux_coredump.h"
 #endif
 #else // OS
@@ -109,9 +111,9 @@ static int r_debug_handle_signals (RDebug *dbg) {
 //this is temporal
 #if __APPLE__ || __linux__
 
-static const char *r_debug_native_reg_profile (RDebug *dbg) {
+static char *r_debug_native_reg_profile (RDebug *dbg) {
 #if __APPLE__
-	return xnu_reg_profile (dbg);
+	return strdup (xnu_reg_profile (dbg));
 #elif __linux__
 	return linux_reg_profile (dbg);
 #endif
@@ -124,7 +126,11 @@ static const char *r_debug_native_reg_profile (RDebug *dbg) {
 #if __WINDOWS__ && !__CYGWIN__
 static int windows_step (RDebug *dbg) {
 	/* set TRAP flag */
+#if _MSC_VER
+	CONTEXT regs;
+#else
 	CONTEXT regs __attribute__ ((aligned (16)));
+#endif
 	r_debug_native_reg_read (dbg, R_REG_TYPE_GPR, (ut8 *)&regs, sizeof (regs));
 	regs.EFlags |= 0x100;
 	r_debug_native_reg_write (dbg, R_REG_TYPE_GPR, (ut8 *)&regs, sizeof (regs));
@@ -163,7 +169,7 @@ static int r_debug_native_attach (RDebug *dbg, int pid) {
 	return linux_attach (dbg, pid);
 #elif __WINDOWS__ && !__CYGWIN__
 	int ret;
-	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, pid);
+	HANDLE process = w32_OpenProcess (PROCESS_ALL_ACCESS, FALSE, pid);
 	if (process != (HANDLE)NULL && DebugActiveProcess (pid)) {
 		ret = w32_first_thread (pid);
 	} else {
@@ -178,11 +184,14 @@ static int r_debug_native_attach (RDebug *dbg, int pid) {
 #elif __APPLE__
 	return xnu_attach (dbg, pid);
 #elif __KFBSD__
-	if (ptrace (PT_ATTACH, pid, 0, 0) != -1) perror ("ptrace (PT_ATTACH)");
+	if (ptrace (PT_ATTACH, pid, 0, 0) != -1) {
+		perror ("ptrace (PT_ATTACH)");
+	}
 	return pid;
 #else
 	int ret = ptrace (PTRACE_ATTACH, pid, 0, 0);
 	if (ret != -1) {
+		eprintf ("Trying to attach to %d\n", pid);
 		perror ("ptrace (PT_ATTACH)");
 	}
 	return pid;
@@ -191,7 +200,7 @@ static int r_debug_native_attach (RDebug *dbg, int pid) {
 
 static int r_debug_native_detach (RDebug *dbg, int pid) {
 #if __WINDOWS__ && !__CYGWIN__
-	return w32_detach (pid)? 0 : -1;
+	return w32_DebugActiveProcessStop (pid)? 0 : -1;
 #elif __CYGWIN__
 	#warning "r_debug_native_detach not supported on this platform"
 	return -1;
@@ -207,6 +216,7 @@ static int r_debug_native_detach (RDebug *dbg, int pid) {
 static int r_debug_native_continue_syscall (RDebug *dbg, int pid, int num) {
 // XXX: num is ignored
 #if __linux__
+	linux_set_options (dbg, pid);
 	return ptrace (PTRACE_SYSCALL, pid, 0, 0);
 #elif __BSD__
 	ut64 pc = r_debug_reg_get (dbg, "PC");
@@ -217,12 +227,22 @@ static int r_debug_native_continue_syscall (RDebug *dbg, int pid, int num) {
 #endif
 }
 
+// XXX linux specific?
+/* Callback to trigger SIGINT signal */
+static void r_debug_native_stop(RDebug *dbg) {
+	r_debug_kill (dbg, dbg->pid, dbg->tid, SIGINT);
+	r_cons_break_pop ();
+}
+
 /* TODO: specify thread? */
 /* TODO: must return true/false */
-static int r_debug_native_continue (RDebug *dbg, int pid, int tid, int sig) {
+static int r_debug_native_continue(RDebug *dbg, int pid, int tid, int sig) {
 #if __WINDOWS__ && !__CYGWIN__
-	if (ContinueDebugEvent (pid, tid, DBG_CONTINUE) == 0) {
-		print_lasterr ((char *)__FUNCTION__, "ContinueDebugEvent");
+	/* Honor the Windows-specific signal that instructs threads to process exceptions */
+	DWORD continue_status = (sig == DBG_EXCEPTION_NOT_HANDLED)
+		? DBG_EXCEPTION_NOT_HANDLED : DBG_CONTINUE;
+	if (ContinueDebugEvent (pid, tid, continue_status) == 0) {
+		r_sys_perror ("r_debug_native_continue/ContinueDebugEvent");
 		eprintf ("debug_contp: error\n");
 		return false;
 	}
@@ -230,8 +250,9 @@ static int r_debug_native_continue (RDebug *dbg, int pid, int tid, int sig) {
 #elif __APPLE__
 	bool ret;
 	ret = xnu_continue (dbg, pid, tid, sig);
-	if (!ret)
+	if (!ret) {
 		return -1;
+	}
 	return tid;
 #elif __BSD__
 	void *data = (void*)(size_t)((sig != -1) ? sig : dbg->reason.signum);
@@ -246,8 +267,30 @@ static int r_debug_native_continue (RDebug *dbg, int pid, int tid, int sig) {
 	if (sig != -1) {
 		contsig = sig;
 	}
-	//eprintf ("continuing with signal %d ...\n", contsig);
-	return ptrace (PTRACE_CONT, pid, NULL, contsig) == 0;
+	/* SIGINT handler for attached processes: dbg.consbreak (disabled by default) */
+	if (dbg->consbreak) {
+		r_cons_break_push ((RConsBreak)r_debug_native_stop, dbg);
+	}
+
+	int ret = ptrace (PTRACE_CONT, pid, NULL, contsig);
+	if (ret) {
+		perror ("PTRACE_CONT");
+	}
+	if (dbg->continue_all_threads && dbg->n_threads) {
+		RList *list = dbg->threads;
+		RDebugPid *th;
+		RListIter *it;
+
+		if (list) {
+			r_list_foreach (list, it, th) {
+				if (th->pid && th->pid != pid) {
+					ptrace (PTRACE_CONT, tid, NULL, contsig);
+				}
+			}
+		}
+	}
+	//return ret >= 0 ? tid : false;
+	return tid;
 #endif
 }
 static RDebugInfo* r_debug_native_info (RDebug *dbg, const char *arg) {
@@ -265,6 +308,7 @@ static RDebugInfo* r_debug_native_info (RDebug *dbg, const char *arg) {
 #if __WINDOWS__ && !__CYGWIN__
 static bool tracelib(RDebug *dbg, const char *mode, PLIB_ITEM item) {
 	const char *needle = NULL;
+	int tmp = 0;
 	if (mode) {
 		switch (mode[0]) {
 		case 'l': needle = dbg->glob_libs; break;
@@ -273,38 +317,80 @@ static bool tracelib(RDebug *dbg, const char *mode, PLIB_ITEM item) {
 	}
 	eprintf ("(%d) %sing library at %p (%s) %s\n", item->pid, mode,
 		item->BaseOfDll, item->Path, item->Name);
-	return !mode || !needle || r_str_glob (item->Name, needle);
+	if (needle && strlen (needle)) {
+		tmp = r_str_glob (item->Name, needle);
+	}
+	return !mode || !needle || tmp ;
 }
 #endif
 
 /*
- * wait for an event and start trying to figure out what to do with it.
+ * Wait for an event and start trying to figure out what to do with it.
  *
  * Returns R_DEBUG_REASON_*
  */
 static RDebugReasonType r_debug_native_wait (RDebug *dbg, int pid) {
-	int status = -1;
 	RDebugReasonType reason = R_DEBUG_REASON_UNKNOWN;
 
 #if __WINDOWS__ && !__CYGWIN__
-	int mode = 0;
 	reason = w32_dbg_wait (dbg, pid);
 	if (reason == R_DEBUG_REASON_NEW_LIB) {
-		mode = 'l';
-	} else if (reason == R_DEBUG_REASON_EXIT_LIB) {
-		mode = 'u';
-	} else {
-		mode = 0;
-	}
-	if (mode) {
 		RDebugInfo *r = r_debug_native_info (dbg, "");
 		if (r && r->lib) {
-			if (tracelib (dbg, mode=='l'? "load":"unload", r->lib))
+			if (tracelib (dbg, "load", r->lib)) {
 				reason = R_DEBUG_REASON_TRAP;
+			}
+			r_debug_info_free (r);
+
+			/* Check if autoload PDB is set, and load PDB information if yes */
+			RCore* core = dbg->corebind.core;
+			bool autoload_pdb = dbg->corebind.cfggeti (core, "pdb.autoload");
+			if (autoload_pdb) {
+				char* o_res = dbg->corebind.cmdstrf (core, "o %s", ((PLIB_ITEM)(r->lib))->Path);
+				// File exists since we loaded it, however the "o" command fails sometimes hence the while loop
+				while (*o_res == 0) {
+					o_res = dbg->corebind.cmdstrf (core, "o %s", ((PLIB_ITEM)(r->lib))->Path);
+				}
+				int fd = atoi (o_res);
+				dbg->corebind.cmdf (core, "o %d", fd);
+				char* pdb_path = dbg->corebind.cmdstr (core, "i~pdb");
+				if (*pdb_path == 0) {
+					eprintf ("Failure...\n");
+					dbg->corebind.cmd (core, "i");
+				} else {
+					pdb_path = strchr (pdb_path, ' ') + 1;
+					dbg->corebind.cmdf (core, ".idp* %s", pdb_path);
+				}
+				dbg->corebind.cmdf (core, "o-%d", fd);
+			}
 		} else {
-			eprintf ("%soading unknown library.\n", mode?"L":"Unl");
+			eprintf ("Loading unknown library.\n");
 		}
-		r_debug_info_free (r);
+	} else if (reason == R_DEBUG_REASON_EXIT_LIB) {
+		RDebugInfo *r = r_debug_native_info (dbg, "");
+		if (r && r->lib) {
+			if (tracelib (dbg, "unload", r->lib)) {
+				reason = R_DEBUG_REASON_TRAP;
+			}
+			r_debug_info_free (r);
+		} else {
+			eprintf ("Unloading unknown library.\n");
+		}
+	} else if (reason == R_DEBUG_REASON_NEW_TID) {
+		RDebugInfo *r = r_debug_native_info (dbg, "");
+		if (r && r->thread) {
+			PTHREAD_ITEM item = r->thread;
+			eprintf ("(%d) Created thread %d (start @ %p)\n", item->pid, item->tid, item->lpStartAddress);
+			r_debug_info_free (r);
+		}
+
+	} else if (reason == R_DEBUG_REASON_EXIT_TID) {
+		RDebugInfo *r = r_debug_native_info (dbg, "");
+		if (r && r->thread) {
+			PTHREAD_ITEM item = r->thread;
+			eprintf ("(%d) Finished thread %d Exit code %d\n", (ut32)item->pid, (ut32)item->tid, (ut32)item->dwExitCode);
+			r_debug_info_free (r);
+		}
 	}
 #else
 	if (pid == -1) {
@@ -313,16 +399,46 @@ static RDebugReasonType r_debug_native_wait (RDebug *dbg, int pid) {
 	}
 
 #if __APPLE__
-	// eprintf ("No waitpid here :D\n");
-	reason = xnu_wait (dbg, pid);
-	status = reason? 1: 0;
+	r_cons_break_push (NULL, NULL);
+	do {
+		reason = xnu_wait (dbg, pid);
+		if (reason == R_DEBUG_REASON_MACH_RCV_INTERRUPTED) {
+			if (r_cons_is_breaked ()) {
+				// Perhaps check the inferior is still alive,
+				// otherwise xnu_stop will fail.
+				reason = xnu_stop (dbg, pid)
+					? R_DEBUG_REASON_USERSUSP
+					: R_DEBUG_REASON_UNKNOWN;
+			} else {
+				// Weird; we'll retry the wait.
+				continue;
+			}
+		}
+		break;
+	} while (true);
+	r_cons_break_pop ();
 #else
+#if __linux__ && !defined (WAIT_ON_ALL_CHILDREN)
+	reason = linux_dbg_wait (dbg, dbg->tid);
+	if (reason == R_DEBUG_REASON_NEW_TID) {
+		RDebugInfo *r = r_debug_native_info (dbg, "");
+		if (r) {
+			eprintf ("(%d) Created thread %d\n", r->pid, r->tid);
+			r_debug_info_free (r);
+		}
+	} else if (reason == R_DEBUG_REASON_EXIT_TID) {
+		RDebugInfo *r = r_debug_native_info (dbg, "");
+		if (r) {
+			eprintf ("(%d) Finished thread %d Exit code\n", r->pid, r->tid);
+			r_debug_info_free (r);
+		}
+	}
+#else
+	int status = -1;
 	// XXX: this is blocking, ^C will be ignored
 #ifdef WAIT_ON_ALL_CHILDREN
-	//eprintf ("waiting on all children ...\n");
 	int ret = waitpid (-1, &status, WAITPID_FLAGS);
 #else
-	//eprintf ("waiting on pid %d ...\n", pid);
 	int ret = waitpid (pid, &status, WAITPID_FLAGS);
 #endif // WAIT_ON_ALL_CHILDREN
 	if (ret == -1) {
@@ -359,12 +475,10 @@ static RDebugReasonType r_debug_native_wait (RDebug *dbg, int pid) {
 			eprintf ("child received signal %d\n", WTERMSIG (status));
 			reason = R_DEBUG_REASON_SIGNAL;
 		} else if (WIFSTOPPED (status)) {
-			if (WSTOPSIG (status) != SIGTRAP) {
+			if (WSTOPSIG (status) != SIGTRAP &&
+				WSTOPSIG (status) != SIGSTOP) {
 				eprintf ("child stopped with signal %d\n", WSTOPSIG (status));
 			}
-
-			/* this one might be good enough... */
-			dbg->reason.signum = WSTOPSIG (status);
 
 			/* the ptrace documentation says GETSIGINFO is only necessary for
 			 * differentiating the various stops.
@@ -400,9 +514,9 @@ static RDebugReasonType r_debug_native_wait (RDebug *dbg, int pid) {
 		eprintf ("%s: no idea what happened... wtf?!?!\n", __func__);
 		reason = R_DEBUG_REASON_ERROR;
 	}
+#endif // __linux__ && !defined (WAIT_ON_ALL_CHILDREN)
 #endif // __APPLE__
 #endif // __WINDOWS__ && !__CYGWIN__
-
 	dbg->reason.tid = pid;
 	dbg->reason.type = reason;
 	return reason;
@@ -411,26 +525,32 @@ static RDebugReasonType r_debug_native_wait (RDebug *dbg, int pid) {
 #undef MAXPID
 #define MAXPID 99999
 
-static RList *r_debug_native_tids (int pid) {
+static RList *r_debug_native_tids (RDebug *dbg, int pid) {
 	printf ("TODO: Threads: \n");
 	// T
 	return NULL;
 }
 
-static RList *r_debug_native_pids (int pid) {
+static RList *r_debug_native_pids (RDebug *dbg, int pid) {
 	RList *list = r_list_new ();
-	if (!list) return NULL;
+	if (!list) {
+		return NULL;
+	}
 #if __WINDOWS__ && !__CYGWIN__
 	return w32_pids (pid, list);
 #elif __APPLE__
 	if (pid) {
 		RDebugPid *p = xnu_get_pid (pid);
-		if (p) r_list_append (list, p);
+		if (p) {
+			r_list_append (list, p);
+		}
 	} else {
 		int i;
 		for (i = 1; i < MAXPID; i++) {
 			RDebugPid *p = xnu_get_pid (i);
-			if (p) r_list_append (list, p);
+			if (p) {
+				r_list_append (list, p);
+			}
 		}
 	}
 #elif __linux__
@@ -443,7 +563,7 @@ static RList *r_debug_native_pids (int pid) {
 		struct dirent *de;
 
 		/* add the requested pid. should we do this? we don't even know if it's valid still.. */
-		r_list_append (list, r_debug_pid_new ("(current)", pid, 's', 0));
+		r_list_append (list, r_debug_pid_new ("(current)", pid, 0, 's', 0));
 
 		/* list parents */
 		dh = opendir ("/proc");
@@ -452,7 +572,10 @@ static RList *r_debug_native_pids (int pid) {
 			r_list_free (list);
 			return NULL;
 		}
+		int uid, gid;
 		while ((de = readdir (dh))) {
+			uid = 0;
+			gid = 0;
 			/* for each existing pid file... */
 			i = atoi (de->d_name);
 			if (i <= 0) {
@@ -466,17 +589,27 @@ static RList *r_debug_native_pids (int pid) {
 			}
 			buf[sizeof (buf) - 1] = 0;
 
+			ptr = strstr (buf, "Uid:");
+			if (ptr) {
+				uid = atoi (ptr + 4);
+			}
+
+			ptr = strstr (buf, "Gid:");
+			if (ptr) {
+				gid = atoi (ptr + 4);
+			}
+
 			/* look for the parent process id */
 			ptr = strstr (buf, "PPid:");
 			if (ptr) {
-				int ppid = atoi (ptr + 6);
+				int ppid = atoi (ptr + 5);
 
 				/* if this is the requested process... */
 				if (i == pid) {
-					//eprintf ("PPid: %d\n", ppid);
-					/* append it to the list with parent */
+					// eprintf ("PPid: %d\n", ppid);
+					// append it to the list with parent
 					r_list_append (list, r_debug_pid_new (
-						"(ppid)", ppid, 's', 0));
+						"(ppid)", ppid, uid, 's', 0));
 				}
 
 				/* ignore it if it is not one of our children */
@@ -485,11 +618,11 @@ static RList *r_debug_native_pids (int pid) {
 				}
 
 				/* it's a child of the requested pid, read it's command line and add it */
-				if (procfs_pid_slurp (ppid, "cmdline", buf, sizeof(buf)) == -1) {
+				if (procfs_pid_slurp (ppid, "cmdline", buf, sizeof (buf)) == -1) {
 					continue;
 				}
-
-				r_list_append (list, r_debug_pid_new (buf, i, 's', 0));
+				// TODO: add support for gid in RDebugPid.new()
+				r_list_append (list, r_debug_pid_new (buf, i, uid, 's', 0));
 			}
 		}
 		closedir (dh);
@@ -505,7 +638,7 @@ static RList *r_debug_native_pids (int pid) {
 			if (procfs_pid_slurp (i, "cmdline", buf, sizeof(buf)) == -1)
 				continue;
 
-			r_list_append (list, r_debug_pid_new (buf, i, 's', 0));
+			r_list_append (list, r_debug_pid_new (buf, i, 0, 's', 0));
 		}
 	}
 #else /* rest is BSD */
@@ -516,6 +649,7 @@ static RList *r_debug_native_pids (int pid) {
 # define KP_COMM(x) (x)->p_comm
 # define KP_PID(x) (x)->p_pid
 # define KP_PPID(x) (x)->p_ppid
+# define KP_UID(x) (x)->p_uid
 # define KINFO_PROC kinfo_proc2
 #elif defined(__OpenBSD__)
 # define KVM_OPEN_FLAG KVM_NO_FILES
@@ -524,6 +658,7 @@ static RList *r_debug_native_pids (int pid) {
 # define KP_COMM(x) (x)->p_comm
 # define KP_PID(x) (x)->p_pid
 # define KP_PPID(x) (x)->p_ppid
+# define KP_UID(x) (x)->p_uid
 # define KINFO_PROC kinfo_proc
 #else
 # define KVM_OPEN_FLAG O_RDONLY
@@ -532,6 +667,7 @@ static RList *r_debug_native_pids (int pid) {
 # define KP_COMM(x) (x)->ki_comm
 # define KP_PID(x) (x)->ki_pid
 # define KP_PPID(x) (x)->ki_ppid
+# define KP_UID(x) (x)->ki_uid
 # define KINFO_PROC kinfo_proc
 #endif
 	char errbuf[_POSIX2_LINE_MAX];
@@ -546,12 +682,12 @@ static RList *r_debug_native_pids (int pid) {
 	if (pid) {
 		kp = KVM_GETPROCS (kd, KERN_PROC_PID, pid, &cnt);
 		if (cnt == 1) {
-			RDebugPid *p = r_debug_pid_new (KP_COMM(kp), pid, 's', 0);
+			RDebugPid *p = r_debug_pid_new (KP_COMM(kp), pid, KP_UID(kp), 's', 0);
 			if (p) r_list_append (list, p);
 			/* we got our process, now fetch the parent process */
 			kp = KVM_GETPROCS (kd, KERN_PROC_PID, KP_PPID(kp), &cnt);
                         if (cnt == 1) {
-				RDebugPid *p = r_debug_pid_new (KP_COMM(kp), KP_PID(kp), 's', 0);
+				RDebugPid *p = r_debug_pid_new (KP_COMM(kp), KP_PID(kp), KP_UID(kp), 's', 0);
 				if (p) r_list_append (list, p);
 			}
 		}
@@ -559,7 +695,7 @@ static RList *r_debug_native_pids (int pid) {
 		kp = KVM_GETPROCS (kd, KERN_PROC_UID, geteuid(), &cnt);
 		int i;
 		for (i = 0; i < cnt; i++) {
-			RDebugPid *p = r_debug_pid_new (KP_COMM(kp + i), KP_PID(kp + i), 's', 0);
+			RDebugPid *p = r_debug_pid_new (KP_COMM(kp + i), KP_PID(kp + i), KP_UID(kp), 's', 0);
 			if (p) r_list_append (list, p);
 		}
 	}
@@ -567,7 +703,6 @@ static RList *r_debug_native_pids (int pid) {
 #endif
 	return list;
 }
-
 
 static RList *r_debug_native_threads (RDebug *dbg, int pid) {
 	RList *list = r_list_new ();
@@ -588,80 +723,7 @@ static RList *r_debug_native_threads (RDebug *dbg, int pid) {
 #endif
 }
 
-#if __WINDOWS__ && !__CYGWIN__
-static int windows_reg_read (RDebug *dbg, int type, ut8 *buf, int size) {
-	int showfpu = false;
-	int pid = dbg->pid;
-	int tid = dbg->tid;
-
-	if (type < -1) {
-		showfpu = true; // hack for debugging
-		type = -type;
-	}
-
-	HANDLE thread = w32_open_thread (pid, tid);
-	CONTEXT ctx __attribute__ ((aligned (16)));
-	ctx.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
-	if (!GetThreadContext (thread, &ctx)) {
-		eprintf ("GetThreadContext: %x\n", (int)GetLastError ());
-		CloseHandle(thread);
-		return false;
-	}
-	CloseHandle(thread);
-	if (type==R_REG_TYPE_FPU || type==R_REG_TYPE_MMX || type==R_REG_TYPE_XMM) {
-	#if __MINGW64__
-		eprintf ("TODO: r_debug_native_reg_read fpu/mmx/xmm\n");
-	#else
-		int i;
-		if (showfpu) {
-			eprintf ("cwd = 0x%08x  ; control   ", (ut32)ctx.FloatSave.ControlWord);
-			eprintf ("swd = 0x%08x  ; status\n", (ut32)ctx.FloatSave.StatusWord);
-			eprintf ("twd = 0x%08x ", (ut32)ctx.FloatSave.TagWord);
-			eprintf ("eof = 0x%08x\n", (ut32)ctx.FloatSave.ErrorOffset);
-			eprintf ("ese = 0x%08x\n", (ut32)ctx.FloatSave.ErrorSelector);
-			eprintf ("dof = 0x%08x\n", (ut32)ctx.FloatSave.DataOffset);
-			eprintf ("dse = 0x%08x\n", (ut32)ctx.FloatSave.DataSelector);
-			eprintf ("mxcr = 0x%08x\n", (ut32)ctx.ExtendedRegisters[24]);
-			for (i=0; i<8; i++) {
-				ut32 *a = (ut32*) &(ctx.ExtendedRegisters[10*16]);
-				a = a + (i * 4);
-				eprintf ("xmm%d = %08x %08x %08x %08x  ",i
-						, (int)a[0], (int)a[1], (int)a[2], (int)a[3] );
-				ut64 *b = (ut64 *)&ctx.FloatSave.RegisterArea[i*10];
-				eprintf ("st%d = %lg (0x%08"PFMT64x")\n", i,
-					(double)*((double*)&ctx.FloatSave.RegisterArea[i*10]), *b);
-			}
-		}
-	#endif
-	}
-	if (sizeof(CONTEXT) < size)
-		size = sizeof(CONTEXT);
-	memcpy (buf, &ctx, size);
-	return size;
-// XXX this must be defined somewhere else
-
-}
-static int windows_reg_write (RDebug *dbg, int type, const ut8* buf, int size) {
-	BOOL ret = false;
-	HANDLE thread;
-	CONTEXT ctx __attribute__((aligned (16)));
-	thread = w32_open_thread (dbg->pid, dbg->tid);
-	ctx.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
-	GetThreadContext (thread, &ctx);
-	if (type == R_REG_TYPE_DRX || type == R_REG_TYPE_GPR || type == R_REG_TYPE_SEG) {
-		if (sizeof(CONTEXT) < size)
-			size = sizeof(CONTEXT);
-		memcpy (&ctx, buf, size);
-		ret = SetThreadContext (thread, &ctx)? true: false;
-	}
-	CloseHandle (thread);
-	return ret;
-}
-#endif
-
-
 #if __sun || __NetBSD__ || __KFBSD__ || __OpenBSD__
-
 
 //Function to read register from Linux, BSD, Android systems
 static int bsd_reg_read (RDebug *dbg, int type, ut8* buf, int size) {
@@ -699,7 +761,7 @@ static int bsd_reg_read (RDebug *dbg, int type, ut8* buf, int size) {
 		memset (&regs, 0, sizeof(regs));
 		memset (buf, 0, size);
 		#if __NetBSD__ || __OpenBSD__
-			ret = ptrace (PTRACE_GETREGS, pid, &regs, sizeof (regs));
+			ret = ptrace (PTRACE_GETREGS, pid, (caddr_t)&regs, sizeof (regs));
 		#elif __KFBSD__
 			ret = ptrace(PT_GETREGS, pid, (caddr_t)&regs, 0);
 		#else
@@ -729,7 +791,7 @@ static int r_debug_native_reg_read (RDebug *dbg, int type, ut8 *buf, int size) {
 	if (size < 1)
 		return false;
 #if __WINDOWS__ && !__CYGWIN__
-	return windows_reg_read (dbg, type, buf, size);
+	return w32_reg_read (dbg, type, buf, size);
 #elif __APPLE__
 	return xnu_reg_read (dbg, type, buf, size);
 #elif __linux__
@@ -753,22 +815,20 @@ static int r_debug_native_reg_write (RDebug *dbg, int type, const ut8* buf, int 
 #elif __linux__
 		return linux_reg_write (dbg, type, buf, size);
 #elif __APPLE__
-		if (1) return false; //disable until fixed ?? know why this
 		return xnu_reg_write (dbg, type, buf, size);
 #else
 		//eprintf ("TODO: No support for write DRX registers\n");
 #if __WINDOWS__ && !__CYGWIN__
-		return windows_reg_write (dbg, type, buf, size);
+		return w32_reg_write (dbg, type, buf, size);
 #endif
 		return false;
 #endif
 #else // i386/x86-64
 		return false;
 #endif
-	} else
-	if (type == R_REG_TYPE_GPR) {
+	} else if (type == R_REG_TYPE_GPR) {
 #if __WINDOWS__ && !__CYGWIN__
-		return windows_reg_write(dbg, type, buf, size);
+		return w32_reg_write(dbg, type, buf, size);
 #elif __linux__
 		return linux_reg_write (dbg, type, buf, size);
 #elif __sun || __NetBSD__ || __KFBSD__ || __OpenBSD__
@@ -871,6 +931,108 @@ static RList *r_debug_native_sysctl_map (RDebug *dbg) {
 
 	return list;
 }
+#elif __linux__
+static int io_perms_to_prot (int io_perms) {
+	int prot_perms = PROT_NONE;
+
+	if (io_perms & R_IO_READ) {
+		prot_perms |= PROT_READ;
+	}
+	if (io_perms & R_IO_WRITE) {
+		prot_perms |= PROT_WRITE;
+	}
+	if (io_perms & R_IO_EXEC) {
+		prot_perms |= PROT_EXEC;
+	}
+	return prot_perms;
+}
+
+static RDebugMap* linux_map_alloc (RDebug *dbg, ut64 addr, int size) {
+	RBuffer *buf = NULL;
+	RDebugMap* map = NULL;
+	char code[1024], *sc_name;
+	int num;
+	/* force to usage of x86.as, not yet working x86.nz */
+	char *asm_list[] = {
+			"x86", "x86.as",
+			"x64", "x86.as",
+			NULL};
+
+	/* NOTE: Since kernel 2.4,  that  system  call  has  been  superseded  by
+       		 mmap2(2 and  nowadays  the  glibc  mmap()  wrapper  function invokes
+       		 mmap2(2)). If arch is x86_32 then usage mmap2() */
+	if (!strcmp (dbg->arch, "x86") && dbg->bits == 4) {
+		sc_name = "mmap2";
+	} else {
+		sc_name = "mmap";
+	}
+	num = r_syscall_get_num (dbg->anal->syscall, sc_name);
+	snprintf (code, sizeof (code),
+		"sc_mmap@syscall(%d);\n"
+		"main@naked(0) { .rarg0 = sc_mmap(0x%08"PFMT64x",%d,%d,%d,%d,%d);break;\n"
+		"}\n",
+		num, addr, size, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	r_egg_reset (dbg->egg);
+	r_egg_setup (dbg->egg, dbg->arch, 8 * dbg->bits, 0, 0);
+	r_egg_load (dbg->egg, code, 0);
+	if (!r_egg_compile (dbg->egg)) {
+		eprintf ("Cannot compile.\n");
+		goto err_linux_map_alloc;
+	}	
+	if (!r_egg_assemble_asm (dbg->egg, asm_list)) {
+		eprintf ("r_egg_assemble: invalid assembly\n");
+		goto err_linux_map_alloc;
+	}
+	buf = r_egg_get_bin (dbg->egg);
+	if (buf) {
+		ut64 map_addr;
+
+		r_reg_arena_push (dbg->reg);
+		map_addr = r_debug_execute (dbg, buf->buf, buf->length, 1);
+		r_reg_arena_pop (dbg->reg);
+		if (map_addr != (ut64)-1) {
+			r_debug_map_sync (dbg);
+			map = r_debug_map_get (dbg, map_addr);
+		}
+	}
+err_linux_map_alloc:
+	return map;
+}
+
+static int linux_map_dealloc (RDebug *dbg, ut64 addr, int size) {
+	RBuffer *buf = NULL;
+	char code[1024];
+	int ret = 0;
+	char *asm_list[] = {
+			"x86", "x86.as",
+			"x64", "x86.as",
+			NULL};
+	int num = r_syscall_get_num (dbg->anal->syscall, "munmap");
+
+	snprintf (code, sizeof (code),
+		"sc_munmap@syscall(%d);\n"
+		"main@naked(0) { .rarg0 = sc_munmap(0x%08"PFMT64x",%d);break;\n"
+		"}\n", num, addr, size);
+	r_egg_reset (dbg->egg);
+	r_egg_setup (dbg->egg, dbg->arch, 8 * dbg->bits, 0, 0);
+	r_egg_load (dbg->egg, code, 0);
+	if (!r_egg_compile (dbg->egg)) {
+		eprintf ("Cannot compile.\n");
+		goto err_linux_map_dealloc;
+	}	
+	if (!r_egg_assemble_asm (dbg->egg, asm_list)) {
+		eprintf ("r_egg_assemble: invalid assembly\n");
+		goto err_linux_map_dealloc;
+	}
+	buf = r_egg_get_bin (dbg->egg);
+	if (buf) {
+		r_reg_arena_push (dbg->reg);
+		ret = r_debug_execute (dbg, buf->buf, buf->length, 1) == 0;
+		r_reg_arena_pop (dbg->reg);
+	}
+err_linux_map_dealloc:
+	return ret;
+}
 #endif
 
 static RDebugMap* r_debug_native_map_alloc (RDebug *dbg, ut64 addr, int size) {
@@ -882,7 +1044,7 @@ static RDebugMap* r_debug_native_map_alloc (RDebug *dbg, ut64 addr, int size) {
 #elif __WINDOWS__ && !__CYGWIN__
 	RDebugMap *map = NULL;
 	LPVOID base = NULL;
-	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
+	HANDLE process = w32_OpenProcess (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
 	if (process == INVALID_HANDLE_VALUE) {
 		return map;
 	}
@@ -896,6 +1058,8 @@ static RDebugMap* r_debug_native_map_alloc (RDebug *dbg, ut64 addr, int size) {
 	r_debug_map_sync (dbg);
 	map = r_debug_map_get (dbg, (ut64)(size_t)base);
 	return map;
+#elif __linux__
+	return linux_map_alloc (dbg, addr, size);	
 #else
 	// malloc not implemented for this platform
 	return NULL;
@@ -908,7 +1072,7 @@ static int r_debug_native_map_dealloc (RDebug *dbg, ut64 addr, int size) {
 	return xnu_map_dealloc (dbg, addr, size);
 
 #elif __WINDOWS__ && !__CYGWIN__
-	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, dbg->tid);
+	HANDLE process = w32_OpenProcess (PROCESS_ALL_ACCESS, FALSE, dbg->tid);
 	if (process == INVALID_HANDLE_VALUE) {
 		return false;
 	}
@@ -920,6 +1084,8 @@ static int r_debug_native_map_dealloc (RDebug *dbg, ut64 addr, int size) {
 	}
 	CloseHandle (process);
 	return ret;
+#elif __linux__
+	return linux_map_dealloc(dbg, addr, size);
 #else
     // mdealloc not implemented for this platform
 	return false;
@@ -949,7 +1115,7 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 #if __sun
 	char path[1024];
 	/* TODO: On solaris parse /proc/%d/map */
-	snprintf (path, sizeof(path) - 1, "pmap %d > /dev/stderr", ps.tid);
+	snprintf (path, sizeof(path) - 1, "pmap %d >&2", ps.tid);
 	system (path);
 #else
 	RDebugMap *map;
@@ -994,10 +1160,12 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 	list->free = (RListFree)_map_free;
 	while (!feof (fd)) {
 		size_t line_len;
-		ut64 map_start, map_end;
+		bool map_is_shared = false;
+		ut64 map_start, map_end, offset;
 
-		if (!fgets (line, sizeof (line), fd))
+		if (!fgets (line, sizeof (line), fd)) {
 			break;
+		}
 		/* kill the newline if we got one */
 		line_len = strlen (line);
 		if (line[line_len - 1] == '\n') {
@@ -1027,10 +1195,10 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 		}
 #else
 		// 7fc8124c4000-7fc81278d000 r--p 00000000 fc:00 17043921 /usr/lib/locale/locale-archive
-		i = sscanf (line, "%s %s %*s %*s %*s %[^\n]", &region[2], perms, name);
-		if (i == 2) {
+		i = sscanf (line, "%s %s %08"PFMT64x" %*s %*s %[^\n]", &region[2], perms, &offset, name);
+		if (i == 3) {
 			name[0] = '\0';
-		} else if (i != 3) {
+		} else if (i != 4) {
 			eprintf ("%s: Unable to parse \"%s\"\n", __func__, path);
 			eprintf ("%s: problematic line: %s\n", __func__, line);
 			r_list_free (list);
@@ -1039,20 +1207,22 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 
 		/* split the region in two */
 		pos_c = strchr (&region[2], '-');
-		if (!pos_c) // should this be an error?
+		if (!pos_c) { // should this be an error?
 			continue;
-
+		}
 		strncpy (&region2[2], pos_c + 1, sizeof (region2) - 2 - 1);
 #endif // __KFBSD__
-
-		if (!*name)
+		if (!*name) {
 			snprintf (name, sizeof (name), "unk%d", unk++);
+		}
 		perm = 0;
-		for (i = 0; perms[i] && i < 4; i++) {
+		for (i = 0; i < 5 && perms[i]; i++) {
 			switch (perms[i]) {
 			case 'r': perm |= R_IO_READ; break;
 			case 'w': perm |= R_IO_WRITE; break;
 			case 'x': perm |= R_IO_EXEC; break;
+			case 'p': map_is_shared = false; break;
+			case 's': map_is_shared = true; break;
 			}
 		}
 
@@ -1062,11 +1232,14 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 			eprintf ("%s: ignoring invalid map size: %s - %s\n", __func__, region, region2);
 			continue;
 		}
-
 		map = r_debug_map_new (name, map_start, map_end, perm, 0);
 		if (!map) {
 			break;
 		}
+#if __linux__
+		map->offset = offset;
+		map->shared = map_is_shared;
+#endif
 		map->file = strdup (name);
 		r_list_append (list, map);
 	}
@@ -1134,8 +1307,8 @@ static RList *r_debug_native_modules_get (RDebug *dbg) {
 	return last;
 }
 
-static int r_debug_native_kill (RDebug *dbg, int pid, int tid, int sig) {
-	int ret = false;
+static bool r_debug_native_kill (RDebug *dbg, int pid, int tid, int sig) {
+	bool ret = false;
 	if (pid == 0) pid = dbg->pid;
 #if __WINDOWS__ && !__CYGWIN__
 	if (sig==0)
@@ -1152,8 +1325,16 @@ static int r_debug_native_kill (RDebug *dbg, int pid, int tid, int sig) {
 		}
 	} else {
 #endif
-	if ((r_sandbox_kill (pid, sig) != -1)) ret = true;
-	if (errno == 1) ret = -true; // EPERM
+	if (sig == SIGKILL && dbg->threads) {
+		r_list_free (dbg->threads);
+		dbg->threads = NULL;
+	}
+	if ((r_sandbox_kill (pid, sig) != -1)) {
+		ret = true;
+	}
+	if (errno == 1) {
+		ret = -true; // EPERM
+	}
 #if 0
 //	}
 #endif
@@ -1171,23 +1352,9 @@ static int r_debug_native_init (RDebug *dbg) {
 #endif
 }
 
-#if __i386__ || __x86_64__
-// XXX: wtf cmon this  must use drx.c #if __linux__ too..
-static int drx_add (RDebug *dbg, ut64 addr, int rwx) {
-	// TODO
-	return false;
-}
-
-static int drx_del (RDebug *dbg, ut64 addr, int rwx) {
-	// TODO
-	return false;
-}
-#endif
-
 static int r_debug_native_drx (RDebug *dbg, int n, ut64 addr, int sz, int rwx, int g) {
 #if __i386__ || __x86_64__
 	drxt regs[8] = {0};
-
 	// sync drx regs
 #define R dbg->reg
 	regs[0] = r_reg_getv (R, "dr0");
@@ -1206,7 +1373,7 @@ static int r_debug_native_drx (RDebug *dbg, int n, ut64 addr, int sz, int rwx, i
 		drx_list ((drxt*)&regs);
 		return false;
 	}
-	if (sz<0) { // remove
+	if (sz < 0) { // remove
 		drx_set (regs, n, addr, -1, 0, 0);
 	} else {
 		drx_set (regs, n, addr, sz, rwx, g);
@@ -1217,6 +1384,7 @@ static int r_debug_native_drx (RDebug *dbg, int n, ut64 addr, int sz, int rwx, i
 	r_reg_setv (R, "dr3", regs[3]);
 	r_reg_setv (R, "dr6", regs[6]);
 	r_reg_setv (R, "dr7", regs[7]);
+
 	return true;
 #else
 	eprintf ("drx: Unsupported platform\n");
@@ -1230,25 +1398,24 @@ static int r_debug_native_drx (RDebug *dbg, int n, ut64 addr, int sz, int rwx, i
  * we only handle the case for hardware breakpoints here. otherwise,
  * we let the caller handle the work.
  */
-static int r_debug_native_bp (RBreakpointItem *bp, int set, void *user) {
-	if (!bp) return false;
+static int r_debug_native_bp (RBreakpoint *bp, RBreakpointItem *b, bool set) {
 #if __i386__ || __x86_64__
-	RDebug *dbg = user;
-
-	if (!bp->hw) return false;
-
-	return set?
-		drx_add (dbg, bp->addr, bp->rwx):
-		drx_del (dbg, bp->addr, bp->rwx);
+	RDebug *dbg = bp->user;
+	if (b && b->hw) {
+		return set
+		? drx_add (dbg, bp, b)
+		: drx_del (dbg, bp, b);
+	}
 #endif
 	return false;
 }
 
 #if __KFBSD__
+
 #include <sys/un.h>
 #include <arpa/inet.h>
-static void addr_to_string (struct sockaddr_storage *ss, char *buffer, int buflen) {
 
+static void addr_to_string (struct sockaddr_storage *ss, char *buffer, int buflen) {
 	char buffer2[INET6_ADDRSTRLEN];
 	struct sockaddr_in6 *sin6;
 	struct sockaddr_in *sin;
@@ -1259,7 +1426,7 @@ static void addr_to_string (struct sockaddr_storage *ss, char *buffer, int bufle
 	case AF_LOCAL:
 		sun = (struct sockaddr_un *)ss;
 		strncpy (buffer, (sun && *sun->sun_path)?
-			sun->sun_path: "-", buflen-1);
+			sun->sun_path: "-", buflen - 1);
 		break;
 	case AF_INET:
 		sin = (struct sockaddr_in *)ss;
@@ -1269,10 +1436,12 @@ static void addr_to_string (struct sockaddr_storage *ss, char *buffer, int bufle
 	case AF_INET6:
 		sin6 = (struct sockaddr_in6 *)ss;
 		if (inet_ntop (AF_INET6, &sin6->sin6_addr, buffer2,
-				sizeof (buffer2)) != NULL)
+				sizeof (buffer2)) != NULL) {
 			snprintf (buffer, buflen, "%s.%d", buffer2,
 				ntohs (sin6->sin6_port));
-		else strcpy (buffer, "-");
+		} else {
+			strcpy (buffer, "-");
+		}
 		break;
 	default:
 		*buffer = 0;
@@ -1334,8 +1503,8 @@ static RList *win_desc_list (int pid) {
 	NTSTATUS status;
 	ULONG handleInfoSize = 0x10000;
 	LPVOID buff;
-	if (!(processHandle=w32_openprocess(0x0040,FALSE,pid))) {
-		eprintf("win_desc_list: Error opening process.\n");
+	if (!(processHandle = w32_OpenProcess (0x0040, FALSE, pid))) {
+		eprintf ("win_desc_list: Error opening process.\n");
 		return NULL;
 	}
 	handleInfo = (PSYSTEM_HANDLE_INFORMATION)malloc(handleInfoSize);
@@ -1499,7 +1668,7 @@ static RList *r_debug_desc_native_list (int pid) {
 static int r_debug_native_map_protect (RDebug *dbg, ut64 addr, int size, int perms) {
 #if __WINDOWS__ && !__CYGWIN__
 	DWORD old;
-	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
+	HANDLE process = w32_OpenProcess (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
 	// TODO: align pointers
 	BOOL ret = VirtualProtectEx (WIN32_PI (process), (LPVOID)(UINT)addr,
 	  			size, perms, &old);
@@ -1508,10 +1677,39 @@ static int r_debug_native_map_protect (RDebug *dbg, ut64 addr, int size, int per
 #elif __APPLE__
 	return xnu_map_protect (dbg, addr, size, perms);
 #elif __linux__
-    // mprotect not implemented for this Linux.. contribs are welcome. use r_egg here?
+	RBuffer *buf = NULL;
+	char code[1024];
+	int num;
+
+	num = r_syscall_get_num (dbg->anal->syscall, "mprotect");
+	snprintf (code, sizeof (code),
+		"sc@syscall(%d);\n"
+		"main@global(0) { sc(%p,%d,%d);\n"
+		":int3\n"
+		"}\n", num, (void*)addr, size, io_perms_to_prot (perms));
+
+	r_egg_reset (dbg->egg);
+	r_egg_setup(dbg->egg, dbg->arch, 8 * dbg->bits, 0, 0);
+	r_egg_load (dbg->egg, code, 0);
+	if (!r_egg_compile (dbg->egg)) {
+		eprintf ("Cannot compile.\n");
+		return false;
+	}
+	if (!r_egg_assemble (dbg->egg)) {
+		eprintf ("r_egg_assemble: invalid assembly\n");
+		return false;
+	}
+	buf = r_egg_get_bin (dbg->egg);
+	if (buf) {
+		r_reg_arena_push (dbg->reg);
+		r_debug_execute (dbg, buf->buf, buf->length , 1);
+		r_reg_arena_pop (dbg->reg);
+		return true;
+	}
+
 	return false;
 #else
-    // mprotect not implemented for this platform
+	// mprotect not implemented for this platform
 	return false;
 #endif
 }
@@ -1553,7 +1751,7 @@ struct r_debug_desc_plugin_t r_debug_desc_plugin_native = {
 	.list = r_debug_desc_native_list,
 };
 
-struct r_debug_plugin_t r_debug_plugin_native = {
+RDebugPlugin r_debug_plugin_native = {
 	.name = "native",
 	.license = "LGPL3",
 #if __i386__
@@ -1563,15 +1761,11 @@ struct r_debug_plugin_t r_debug_plugin_native = {
 #elif __x86_64__
 	.bits = R_SYS_BITS_32 | R_SYS_BITS_64,
 	.arch = "x86",
-#if __linux__
-	.canstep = 0, // XXX it's 1 on some platforms...
-#else
 	.canstep = 1, // XXX it's 1 on some platforms...
-#endif
-#elif __aarch64__
+#elif __aarch64__ || __arm64__
 	.bits = R_SYS_BITS_16 | R_SYS_BITS_32 | R_SYS_BITS_64,
 	.arch = "arm",
-	.canstep = 0, // XXX it's 1 on some platforms...
+	.canstep = 1,
 #elif __arm__
 	.bits = R_SYS_BITS_16 | R_SYS_BITS_32 | R_SYS_BITS_64,
 	.arch = "arm",
@@ -1580,15 +1774,23 @@ struct r_debug_plugin_t r_debug_plugin_native = {
 	.bits = R_SYS_BITS_32 | R_SYS_BITS_64,
 	.arch = "mips",
 	.canstep = 0,
-#elif __POWERPC__
+#elif __powerpc__
+# if __powerpc64__
+	.bits = R_SYS_BITS_32 | R_SYS_BITS_64,
+# else
 	.bits = R_SYS_BITS_32,
+#endif
 	.arch = "ppc",
 	.canstep = 1,
 #else
 	.bits = 0,
 	.arch = 0,
 	.canstep = 0,
+#ifdef _MSC_VER
+#pragma message("Unsupported architecture")
+#else
 #warning Unsupported architecture
+#endif
 #endif
 	.init = &r_debug_native_init,
 	.step = &r_debug_native_step,
@@ -1602,7 +1804,7 @@ struct r_debug_plugin_t r_debug_plugin_native = {
 	.wait = &r_debug_native_wait,
 	.kill = &r_debug_native_kill,
 	.frames = &r_debug_native_frames, // rename to backtrace ?
-	.reg_profile = (void *)r_debug_native_reg_profile,
+	.reg_profile = r_debug_native_reg_profile,
 	.reg_read = r_debug_native_reg_read,
 	.info = r_debug_native_info,
 	.reg_write = (void *)&r_debug_native_reg_write,
@@ -1611,13 +1813,13 @@ struct r_debug_plugin_t r_debug_plugin_native = {
 	.map_get = r_debug_native_map_get,
 	.modules_get = r_debug_native_modules_get,
 	.map_protect = r_debug_native_map_protect,
-	.breakpoint = r_debug_native_bp,
+	.breakpoint = (RBreakpointCallback)r_debug_native_bp,
 	.drx = r_debug_native_drx,
 	.gcore = r_debug_gcore,
 };
 
 #ifndef CORELIB
-struct r_lib_struct_t radare_plugin = {
+RLibStruct radare_plugin = {
 	.type = R_LIB_TYPE_DBG,
 	.data = &r_debug_plugin_native,
 	.version = R2_VERSION
@@ -1626,9 +1828,8 @@ struct r_lib_struct_t radare_plugin = {
 
 //#endif
 #else // DEBUGGER
-struct r_debug_plugin_t r_debug_plugin_native = {
+RDebugPlugin r_debug_plugin_native = {
 	NULL // .name = "native",
 };
-
 
 #endif // DEBUGGER

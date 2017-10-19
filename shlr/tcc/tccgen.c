@@ -106,8 +106,9 @@ static Sym *__sym_malloc(void)
 {
     Sym *sym_pool, *sym, *last_sym;
     int i;
-
-    sym_pool = malloc(SYM_POOL_NB * sizeof(Sym));
+	int sym_pool_size = SYM_POOL_NB * sizeof(Sym);
+    sym_pool = malloc(sym_pool_size);
+	memset(sym_pool, 0, sym_pool_size);
     dynarray_add(&sym_pools, &nb_sym_pools, sym_pool);
 
     last_sym = sym_free_first;
@@ -149,8 +150,8 @@ ST_FUNC Sym *sym_push2(Sym **ps, int v, int t, long long c)
                           get_tok_str(v, NULL));
     }
 	// printf (" %d %ld set symbol '%s'\n", t, c, get_tok_str(v, NULL));
-    s = *ps;
-    s = sym_malloc();
+    // s = *ps;
+    s = sym_malloc ();
     s->asm_label = NULL;
     s->v = v;
     s->type.t = t;
@@ -196,6 +197,63 @@ ST_INLN Sym *sym_find(int v)
     return table_ident[v]->sym_identifier;
 }
 
+// TODO: Add better way to store the meta information
+// about the pushed type
+int tcc_sym_push(char* typename, int typesize, int meta)
+{
+	CType *new_type = (CType*)malloc (sizeof(CType));
+	if (!new_type) {
+		return 0;
+	}
+	new_type->ref = sym_malloc();
+	new_type->t = meta;
+
+	sym_push(0, new_type, 0, 0);
+	free (new_type);
+	return 1;
+}
+
+void dump_type(CType *type, int depth)
+{
+	if (depth <= 0) return;
+	eprintf("------------------------\n");
+	int bt = type->t & VT_BTYPE;
+	eprintf("BTYPE = %d ", bt);
+	switch (bt) {
+		case VT_STRUCT: eprintf("[STRUCT]\n");
+			break;
+		case VT_PTR: eprintf("[PTR]\n");
+			break;
+		case VT_ENUM: eprintf("[ENUM]\n");
+			break;
+		case VT_LLONG: eprintf("[LLONG]\n");
+			break;
+		case VT_INT: eprintf("[INT]\n");
+			break;
+		case VT_SHORT: eprintf("[SHORT]\n");
+			break;
+		case VT_BYTE: eprintf("[BYTE]\n");
+			break;
+		default:
+			eprintf("\n");
+			break;
+	}
+	if (type->ref) {
+		eprintf("v = %d\n", type->ref->v);
+		char *varstr = NULL;
+		varstr = get_tok_str(type->ref->v, NULL);
+		if (varstr) {
+			eprintf("var = %s\n", varstr);
+		}
+		if (type->ref->asm_label) {
+			eprintf("asm_label = %s\n", type->ref->asm_label);
+		}
+		eprintf("r = %d\n", type->ref->r);
+		eprintf("associated type:\n");
+		//dump_type(&(type->ref->type), --depth);
+	}
+}
+
 /* push a given symbol on the symbol stack */
 ST_FUNC Sym *sym_push(int v, CType *type, int r, long long c)
 {
@@ -206,6 +264,7 @@ ST_FUNC Sym *sym_push(int v, CType *type, int r, long long c)
         ps = &local_stack;
     else
         ps = &global_stack;
+	//dump_type(type, 5);
     s = sym_push2(ps, v, type->t, c);
     s->type.ref = type->ref;
     s->r = r;
@@ -352,7 +411,7 @@ static void vseti(int r, int v)
 {
     CType type;
     type.t = VT_INT;
-    type.ref = 0;
+    type.ref = NULL;
     vset(&type, r, v);
 }
 
@@ -448,21 +507,25 @@ ST_FUNC int type_size(CType *type, int *a)
         *a = LDOUBLE_ALIGN;
         return LDOUBLE_SIZE;
     } else if (bt == VT_DOUBLE || bt == VT_LLONG) {
-#ifdef TCC_TARGET_I386
-#ifdef TCC_TARGET_PE
-        *a = 8;
-#else
-        *a = 4;
-#endif
-#elif defined(TCC_TARGET_ARM)
-#ifdef TCC_ARM_EABI
-        *a = 8;
-#else
-        *a = 4;
-#endif
-#else
-        *a = 8;
-#endif
+		if (!strncmp(tcc_state->arch, "x86", 3) && tcc_state->bits == 32) {
+			if (!strncmp(tcc_state->os, "windows", 7)) {
+				*a = 8;
+			} else {
+				*a = 4;
+			}
+		} else if (!strncmp(tcc_state->arch, "arm", 3)) {
+		/* It was like originally:
+			#ifdef TCC_ARM_EABI
+				*a = 8;
+			#else
+		        *a = 4;
+			#endif
+			FIXME: Determine EABI then too
+		*/
+			*a = 8;
+		} else {
+			*a = 8;
+		}
         return 8;
 	} else if (bt == VT_ENUM) {
 		/* Non standard, but still widely used
@@ -828,10 +891,9 @@ static void struct_decl(CType *type, int u)
     int bit_size, bit_pos, bsize, bt, lbit_pos, prevbt;
     Sym *s, *ss, *ass, **ps;
     AttributeDef ad;
-    CType type1, btype;
 	const char *name = NULL;
-
-	memset (&type1, 0, sizeof (type1));
+	STACK_NEW0(CType, type1);
+	STACK_NEW0(CType, btype);
 
     a = tok; /* save decl type */
     next();
@@ -883,13 +945,14 @@ static void struct_decl(CType *type, int u)
                     next();
                     c = expr_const();
                 }
-		if (strcmp (name, "{")) {
-			char *varstr = get_tok_str (v, NULL);
-			tcc_appendf ("%s.%s=0x%"PFMT64x"\n", name, varstr, c);
-			tcc_appendf ("%s.0x%"PFMT64x"=%s\n", name, c, varstr);
-// TODO: if token already defined throw an error
-//  if (varstr isInside (arrayOfvars)) { erprintf ("ERROR: DUP VAR IN ENUM\n"); }
-		}
+				if (strcmp (name, "{")) {
+					char *varstr = get_tok_str (v, NULL);
+					//eprintf("%s.%s @ 0x%"PFMT64x"\n", name, varstr, c);
+					tcc_appendf ("%s.%s=0x%"PFMT64x"\n", name, varstr, c);
+					tcc_appendf ("%s.0x%"PFMT64x"=%s\n", name, c, varstr);
+					// TODO: if token already defined throw an error
+					//  if (varstr isInside (arrayOfvars)) { erprintf ("ERROR: DUP VAR IN ENUM\n"); }
+				}
                 /* enum symbols have static storage */
                 ss = sym_push(v, &llong_type, VT_CONST, c);
                 ss->type.t |= VT_STATIC;
@@ -916,7 +979,7 @@ static void struct_decl(CType *type, int u)
                 while (1) {
                     bit_size = -1;
                     v = 0;
-                    type1 = btype;
+                    memcpy(&type1, &btype, sizeof(type1));
                     if (tok != ':') {
                         type_decl(&type1, &ad, &v, TYPE_DIRECT | TYPE_ABSTRACT);
                         if (v == 0 && (type1.t & VT_BTYPE) != VT_STRUCT)
@@ -1010,9 +1073,13 @@ static void struct_decl(CType *type, int u)
 			type_to_str (b, sizeof(b), &type1, NULL);
 			{
 				const char *ctype = (a == TOK_UNION)? "union": "struct";
+				int type_bt = type1.t & VT_BTYPE;
+				//eprintf("2: %s.%s = %s\n", ctype, name, varstr);
 				tcc_appendf ("%s=%s\n", name, ctype);
 				tcc_appendf ("[+]%s.%s=%s\n",
 						ctype, name, varstr);
+				tcc_appendf ("%s.%s.%s.meta=%d\n",
+						ctype, name, varstr, type_bt);
 				/* compact form */
 				tcc_appendf ("%s.%s.%s=%s,%d,%d\n",
 						ctype, name,varstr,b,offset,arraysize);
@@ -1065,7 +1132,7 @@ static int parse_btype(CType *type, AttributeDef *ad)
 {
     int t, u, type_found, typespec_found, typedef_found;
     Sym *s;
-    CType type1;
+    STACK_NEW0(CType, type1);
 
     memset(ad, 0, sizeof(AttributeDef));
     type_found = 0;
@@ -1103,9 +1170,10 @@ static int parse_btype(CType *type, AttributeDef *ad)
         case TOK_LONG:
             next();
             if ((t & VT_BTYPE) == VT_DOUBLE) {
-#ifndef TCC_TARGET_PE
-                t = (t & ~VT_BTYPE) | VT_LDOUBLE;
-#endif
+				// #ifndef TCC_TARGET_PE
+				if (strncmp(tcc_state->os, "windows", 7)) {
+					t = (t & ~VT_BTYPE) | VT_LDOUBLE;
+				}
             } else if ((t & VT_BTYPE) == VT_LONG) {
                 t = (t & ~VT_BTYPE) | VT_LLONG;
             } else {
@@ -1122,11 +1190,11 @@ static int parse_btype(CType *type, AttributeDef *ad)
         case TOK_DOUBLE:
             next();
             if ((t & VT_BTYPE) == VT_LONG) {
-#ifdef TCC_TARGET_PE
-                t = (t & ~VT_BTYPE) | VT_DOUBLE;
-#else
-                t = (t & ~VT_BTYPE) | VT_LDOUBLE;
-#endif
+				if (!strncmp(tcc_state->os, "windows", 7)) {
+					t = (t & ~VT_BTYPE) | VT_DOUBLE;
+				} else {
+					t = (t & ~VT_BTYPE) | VT_LDOUBLE;
+				}
             } else {
                 u = VT_DOUBLE;
                 goto basic_type1;
@@ -1286,14 +1354,14 @@ int narg  =0;
         l = 0;
         first = NULL;
         plast = &first;
-{
-const char *ret_type = global_type;
-free (symname);
-symname = strdup (global_symname);
-tcc_appendf ("func.%s.ret=%s\n", symname, ret_type);
-tcc_appendf ("func.%s.cc=%s\n", symname, "cdecl"); // TODO
-tcc_appendf ("%s=func\n", symname);
-}
+		{
+			const char *ret_type = global_type;
+			free (symname);
+			symname = strdup (global_symname);
+			tcc_appendf ("func.%s.ret=%s\n", symname, ret_type);
+			tcc_appendf ("func.%s.cc=%s\n", symname, "cdecl"); // TODO
+			tcc_appendf ("%s=func\n", symname);
+		}
         arg_size = 0;
         if (tok != ')') {
             for(;;) {
@@ -1324,13 +1392,13 @@ tcc_appendf ("%s=func\n", symname);
                 }
                 convert_parameter_type(&pt);
                 s = sym_push(n | SYM_FIELD, &pt, 0, 0);
-{
-	    char kind[1024];
-	    type_to_str (kind, sizeof (kind), &pt, NULL);
-	    tcc_appendf ("func.%s.arg.%d=%s,%s\n",
-		symname, narg, kind, global_symname);
-	    narg++;
-}
+				{
+				    char kind[1024];
+				    type_to_str (kind, sizeof (kind), &pt, NULL);
+				    tcc_appendf ("func.%s.arg.%d=%s,%s\n",
+						symname, narg, kind, global_symname);
+				    narg++;
+				}
                 *plast = s;
                 plast = &s->next;
                 if (tok == ')')
@@ -1343,7 +1411,7 @@ tcc_appendf ("%s=func\n", symname);
                 }
             }
         }
-	tcc_appendf ("func.%s.args=%d\n", symname, narg);
+		tcc_appendf ("func.%s.args=%d\n", symname, narg);
         /* if no parameters, then old type prototype */
         if (l == 0)
             l = FUNC_OLD;
@@ -1417,8 +1485,14 @@ if (n<0) {
 static void type_decl(CType *type, AttributeDef *ad, int *v, int td)
 {
     Sym *s;
-    CType type1, *type2;
     int qualifiers, storage;
+	CType *type1 = R_NEW0(CType);
+	CType *type2 = R_NEW0(CType);
+	if (!type1 || !type2) {
+free (type1);
+free (type2);
+return;
+}
 
     while (tok == '*') {
         qualifiers = 0;
@@ -1450,14 +1524,14 @@ static void type_decl(CType *type, AttributeDef *ad, int *v, int td)
 
     /* recursive type */
     /* XXX: incorrect if abstract type for functions (e.g. 'int ()') */
-    type1.t = 0; /* XXX: same as int */
+    type1->t = 0; /* XXX: same as int */
     if (tok == '(') {
         next();
         /* XXX: this is not correct to modify 'ad' at this point, but
            the syntax is not clear */
         if (tok == TOK_ATTRIBUTE1 || tok == TOK_ATTRIBUTE2)
             parse_attribute(ad);
-        type_decl(&type1, ad, v, td);
+        type_decl(type1, ad, v, td);
         skip(')');
     } else {
         /* type identifier */
@@ -1479,7 +1553,7 @@ static void type_decl(CType *type, AttributeDef *ad, int *v, int td)
         post_type(type, ad);
         nocode_wanted = saved_nocode_wanted;
     } else {
-	    char kind[1024];
+	    static char kind[1024];
 	    char *name = get_tok_str (*v, NULL);
 	    type_to_str (kind, sizeof(kind), type, NULL);
 	    //eprintf ("---%d %s STATIC %s\n", td, kind, name);
@@ -1491,20 +1565,22 @@ static void type_decl(CType *type, AttributeDef *ad, int *v, int td)
     if (tok == TOK_ATTRIBUTE1 || tok == TOK_ATTRIBUTE2)
         parse_attribute(ad);
 
-    if (!type1.t)
+    if (!type1->t) {
+free (type1);
+free (type2);
         return;
+    }
     /* append type at the end of type1 */
-    type2 = &type1;
+    type2 = type1;
     for(;;) {
         s = type2->ref;
-//eprintf ("ARG:\n");
         type2 = &s->type;
         if (!type2->t) {
             *type2 = *type;
             break;
         }
     }
-    *type = type1;
+    memcpy(type, type1, sizeof(*type));
 }
 
 /* compute the lvalue VT_LVAL_xxx needed to match type t. */
@@ -1576,7 +1652,7 @@ static void vpush_tokc(int t)
 {
     CType type;
     type.t = t;
-    type.ref = 0;
+    type.ref = NULL;
     vsetc(&type, VT_CONST, &tokc);
 }
 
@@ -1633,7 +1709,7 @@ ST_FUNC void unary(void)
         /* fall thru */
     case TOK___FUNC__:
         {
-            void *ptr = NULL;
+            // void *ptr = NULL;
             int len;
             /* special function name identifier */
             len = strlen(funcname) + 1;
@@ -1642,16 +1718,17 @@ ST_FUNC void unary(void)
             mk_pointer(&type);
             type.t |= VT_ARRAY;
             type.ref->c = len;
-            memcpy(ptr, funcname, len);
+            // XXX ptr is NULL HERE WTF
+            // memcpy(ptr, funcname, len);
             next();
         }
         break;
     case TOK_LSTR:
-#ifdef TCC_TARGET_PE
-        t = VT_SHORT | VT_UNSIGNED;
-#else
-        t = VT_INT;
-#endif
+		if (!strncmp(tcc_state->os, "windows", 7)) {
+			t = VT_SHORT | VT_UNSIGNED;
+		} else {
+			t = VT_INT;
+		}
         goto str_init;
     case TOK_STR:
         /* string parsing */
@@ -1732,7 +1809,8 @@ ST_FUNC void unary(void)
 
     case TOK_builtin_types_compatible_p:
         {
-            CType type1, type2;
+			STACK_NEW0(CType, type1);
+			STACK_NEW0(CType, type2);
             next();
             skip('(');
             parse_type(&type1);
@@ -1780,10 +1858,9 @@ ST_FUNC void unary(void)
             }
         }
         break;
-#ifdef TCC_TARGET_X86_64
-#ifdef TCC_TARGET_PE
     case TOK_builtin_va_start:
-        {
+		if (!strncmp(tcc_state->arch, "x86", 3) && tcc_state->bits == 64 &&
+			!strncmp(tcc_state->os, "windows", 7)) {
             next();
             skip('(');
             expr_eq();
@@ -1796,20 +1873,18 @@ ST_FUNC void unary(void)
             vtop->type = char_pointer_type;
         }
         break;
-#else
     case TOK_builtin_va_arg_types:
-        {
+        if (!(!strncmp(tcc_state->arch, "x86", 3) && tcc_state->bits == 64 &&
+			!strncmp(tcc_state->os, "windows", 7))) {
             CType type;
-            int bt;
             next();
             skip('(');
             parse_type(&type);
             skip(')');
-            vpushll(classify_x86_64_va_arg(&type));
+			// FIXME: Handle this too
+            //vpushll(classify_x86_64_va_arg(&type));
         }
         break;
-#endif
-#endif
 
     // special qnan , snan and infinity values
     case TOK___NAN__:
@@ -1879,8 +1954,9 @@ ST_FUNC void unary(void)
                 if (s->v == tok)
                     break;
             }
-            if (!s)
+            if (!s) {
                 tcc_error("field not found: %s",  get_tok_str(tok & ~SYM_FIELD, NULL));
+	    }
             /* add field offset to pointer */
             vtop->type = char_pointer_type; /* change type to 'char *' */
             vpushi(s->c);
@@ -2161,14 +2237,12 @@ static void decl_designator(CType *type, unsigned long c,
                             long long *cur_index, Sym **cur_field,
                             int size_only)
 {
-    Sym *s, *f;
-	long long index, index_last;
+    Sym *s, *f = NULL;
+    long long index, index_last;
     int notfirst, align, l, nb_elems, elem_size;
-    CType type1;
+	STACK_NEW0(CType, type1);
 
     notfirst = 0;
-    elem_size = 0;
-    nb_elems = 1;
     if (gnu_ext && (l = is_label()) != 0)
         goto struct_field;
     while (tok == '[' || tok == '.') {
@@ -2222,10 +2296,12 @@ static void decl_designator(CType *type, unsigned long c,
             if (!notfirst)
                 *cur_field = f;
             /* XXX: fix this mess by using explicit storage field */
+if (f) {
             type1 = f->type;
             type1.t |= (type->t & ~VT_TYPE);
             type = &type1;
             c += f->c;
+}
         }
         notfirst = 1;
     }
@@ -2246,10 +2322,12 @@ static void decl_designator(CType *type, unsigned long c,
             if (!f)
                 tcc_error("too many field init");
             /* XXX: fix this mess by using explicit storage field */
+if (f) {
             type1 = f->type;
             type1.t |= (type->t & ~VT_TYPE);
             type = &type1;
             c += f->c;
+}
         }
     }
     decl_initializer(type, c, 0, size_only);
@@ -2334,6 +2412,7 @@ static void decl_initializer(CType *type, unsigned long c,
         /* only parse strings here if correct type (otherwise: handle
            them as ((w)char *) expressions */
         if ((tok == TOK_LSTR &&
+/* FIXME: Handle platform here ! */
 #ifdef TCC_TARGET_PE
              (t1->t & VT_BTYPE) == VT_SHORT && (t1->t & VT_UNSIGNED)
 #else
@@ -2430,7 +2509,7 @@ static void decl_initializer(CType *type, unsigned long c,
         par_count = 0;
         if (tok == '(') {
             AttributeDef ad1;
-            CType type1;
+            STACK_NEW0(CType, type1);
             next();
             while (tok == '(') {
                 par_count++;
@@ -2688,7 +2767,7 @@ static void func_decl_list(Sym *func_sym)
 {
     AttributeDef ad;
     int v;
-    Sym *s;
+    Sym *s = NULL;
     CType btype, type;
 
     /* parse each declaration */
@@ -2719,7 +2798,9 @@ static void func_decl_list(Sym *func_sym)
                     tcc_error("storage class specified for '%s'", get_tok_str(v, NULL));
                 convert_parameter_type(&type);
                 /* we can add the type (NOTE: it could be local to the function) */
+if (s) {
                 s->type = type;
+}
                 /* accept other parameters */
                 if (tok == ',')
                     next();

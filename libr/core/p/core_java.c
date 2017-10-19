@@ -1,4 +1,4 @@
-/* radare - Apache - Copyright 2014-2015 - dso, pancake */
+/* radare - Apache - Copyright 2014-2016 - dso, pancake */
 
 #include <r_types.h>
 #include <r_lib.h>
@@ -147,7 +147,7 @@ typedef struct r_cmd_java_cms_t {
 
 #define PROTOTYPES "prototypes"
 #define PROTOTYPES_ARGS " <jaicmf>" // < j | a | i | c | m | f>
-#define PROTOTYPES_DESC "show in JSON, or All,Imports,Class,Methods,Fields,Methods,Fields"
+#define PROTOTYPES_DESC "show in JSON, or All,Imports,Class,Methods,Fields"
 #define PROTOTYPES_LEN 10
 
 #define RESOLVE_CP "resolve_cp"
@@ -557,7 +557,7 @@ static int r_cmd_java_get_cp_bytes_and_write (RCore *core, RBinJavaObj *obj, ut1
 	if (res == true) {
 		ut64 n_file_sz = 0;
 		ut8 * bin_buffer = NULL;
-		res = r_io_use_desc (core->io, core->file->desc);
+		res = r_io_use_fd (core->io, core->file->fd);
 		n_file_sz = r_io_size (core->io);
 		bin_buffer = n_file_sz > 0 ? malloc (n_file_sz) : NULL;
 		if (bin_buffer) {
@@ -885,7 +885,7 @@ static int r_cmd_java_handle_reload_bin (RCore *core, const char *cmd) {
 	// XXX this may cause problems cause the file we are looking at may not be the bin we want.
 	// lets pretend it is for now
 	if (buf_size == 0) {
-		res = r_io_use_desc (core->io, core->file->desc);
+		res = r_io_use_fd (core->io, core->file->fd);
 		buf_size = r_io_size (core->io);
 		buf = malloc (buf_size);
 		memset (buf, 0, buf_size);
@@ -1035,7 +1035,7 @@ static int r_cmd_java_handle_calc_class_sz (RCore *core, const char *cmd) {
 	ut64 sz = UT64_MAX;
 	ut64 addr = UT64_MAX;
 	ut64 res_size = UT64_MAX,
-		 cur_fsz = r_io_desc_size (core->io, r_core_file_cur (core)->desc);
+		 cur_fsz = r_io_fd_size (core->io, r_core_file_cur (core)->fd);
 	ut8 *buf = NULL;
 	ut32 init_size = (1 << 16);
 	const char *p = cmd ? r_cmd_java_consumetok (cmd, ' ', -1): NULL;
@@ -1049,9 +1049,9 @@ static int r_cmd_java_handle_calc_class_sz (RCore *core, const char *cmd) {
 		sz = cur_fsz < init_size ? cur_fsz : init_size;
 		while (sz <= cur_fsz) {
 			buf = realloc (buf, sz);
-			ut64 r_sz = r_core_read_at (core, addr, buf, sz);
+			ut64 r_sz = r_core_read_at (core, addr, buf, sz) ? sz : 0LL;
 			// check the return read on the read
-			if (r_sz == UT64_MAX || r_sz == 0) break;
+			if (r_sz == 0) break;
 			res_size = r_bin_java_calc_class_size (buf, sz);
 			// if the data buffer contains a class starting
 			// at address, then the res_size will be the size
@@ -1082,7 +1082,7 @@ static int r_cmd_java_handle_isvalid (RCore *core, const char *cmd) {
 	int res = false;
 	ut64 res_size = UT64_MAX;
 	ut8 *buf = NULL;
-	ut32 cur_fsz =  r_io_desc_size (core->io, r_core_file_cur (core)->desc);
+	ut32 cur_fsz =  r_io_fd_size (core->io, r_core_file_cur (core)->fd);
 	ut64 sz = UT64_MAX;
 	const char *p = cmd ? r_cmd_java_consumetok (cmd, ' ', -1): NULL;
 	ut64 addr = UT64_MAX;
@@ -1096,9 +1096,9 @@ static int r_cmd_java_handle_isvalid (RCore *core, const char *cmd) {
 
 		while (sz <= cur_fsz) {
 			buf = realloc (buf, sz);
-			ut64 r_sz = r_core_read_at (core, addr, buf, sz);
+			ut64 r_sz = r_core_read_at (core, addr, buf, sz) ? sz : 0LL;
 			// check the return read on the read
-			if (r_sz == UT64_MAX || r_sz == 0) break;
+			if (r_sz == 0) break;
 			res_size = r_bin_java_calc_class_size (buf, sz);
 			// if the data buffer contains a class starting
 			// at address, then the res_size will be the size
@@ -1396,26 +1396,27 @@ static int r_cmd_java_call(void *user, const char *input) {
 	RCore *core = (RCore *) user;
 	int res = false;
 	ut32 i = 0;
-	IFDBG r_cons_printf ("Function call made: %s\n", input);
-	if (strncmp (input, "java",4)) return false;
-	else if (strncmp (input, "java ",5)) {
+	if (strncmp (input, "java", 4)) {
+		return false;
+	}
+	if (input[4] != ' ') {
 		return r_cmd_java_handle_help (core, input);
 	}
-
-	for (; i <END_CMDS; i++) {
+	for (; i < END_CMDS; i++) {
 		//IFDBG r_cons_printf ("Checking cmd: %s %d %s\n", JAVA_CMDS[i].name, JAVA_CMDS[i].name_len, p);
-		IFDBG r_cons_printf ("Checking cmd: %s %d\n", JAVA_CMDS[i].name, strncmp (input+5, JAVA_CMDS[i].name, JAVA_CMDS[i].name_len));
-		if (!strncmp (input+5, JAVA_CMDS[i].name, JAVA_CMDS[i].name_len)) {
-			const char *cmd = input+5+JAVA_CMDS[i].name_len;
+		IFDBG r_cons_printf ("Checking cmd: %s %d\n", JAVA_CMDS[i].name,
+			strncmp (input+5, JAVA_CMDS[i].name, JAVA_CMDS[i].name_len));
+		if (!strncmp (input + 5, JAVA_CMDS[i].name, JAVA_CMDS[i].name_len)) {
+			const char *cmd = input + 5 + JAVA_CMDS[i].name_len;
 			if (*cmd && *cmd == ' ') cmd++;
 			//IFDBG r_cons_printf ("Executing cmd: %s (%s)\n", JAVA_CMDS[i].name, cmd+5+JAVA_CMDS[i].name_len );
-
 			res =  JAVA_CMDS[i].handler (core, cmd);
 			break;
 		}
 	}
-
-	if (res == false) res = r_cmd_java_handle_help (core, input);
+	if (!res) {
+		res = r_cmd_java_handle_help (core, input);
+	}
 	return true;
 }
 
@@ -1736,7 +1737,6 @@ static char * r_cmd_java_get_descriptor (RCore *core, RBinJavaObj *bin, ut16 idx
 	char *class_name = NULL, *fullname = NULL, *name = NULL, *descriptor = NULL;
 	RBinJavaCPTypeObj * obj = r_bin_java_get_item_from_bin_cp_list (bin, idx);
 	char * prototype = NULL;
-
 	if (idx == 0) {
 		prototype = strdup ("NULL");
 		return prototype;
@@ -1895,7 +1895,7 @@ static int r_cmd_java_handle_yara_code_extraction_refs (RCore *core, const char 
 	if (!p) return res;
 
 	n = *p ? r_cmd_java_strtok (p, ' ', -1) : NULL;
-	name = n && p && p != n ? malloc (n-p+2) : NULL;
+	name = n && p && p != n ? malloc (n - p + 2) : NULL;
 
 	if (!name) return res;
 
@@ -1933,8 +1933,10 @@ static int r_cmd_java_handle_insert_method_ref (RCore *core, const char *input) 
 	ut32 cn_sz = 0, n_sz = 0, d_sz = 0;
 	int res = false;
 
-	if (!bin) return res;
-	else if (!anal || !anal->fcns || r_list_length (anal->fcns) == 0) {
+	if (!bin) {
+		return res;
+	}
+	if (!anal || !anal->fcns || r_list_length (anal->fcns) == 0) {
 		eprintf ("Unable to access the current analysis, perform 'af' for function analysis.\n");
 		return true;
 	}
@@ -1960,7 +1962,7 @@ static int r_cmd_java_handle_insert_method_ref (RCore *core, const char *input) 
 	//memset (name, 0, n_sz);
 	//memcpy (name, p, n-p);
 
-	p = n+1;
+	p = n + 1;
 	n =  p && *p ? r_cmd_java_strtok (p, ' ', -1) : NULL;
 	if (n) {
 		descriptor = n && p && p != n ? malloc (n-p+1) : NULL;
@@ -2028,7 +2030,6 @@ static int r_cmd_java_handle_print_exceptions (RCore *core, const char *input) {
 			free (class_info);
 		}
 	}
-
 	return true;
 }
 
@@ -2041,7 +2042,7 @@ RCorePlugin r_core_plugin_java = {
 };
 
 #ifndef CORELIB
-struct r_lib_struct_t radare_plugin = {
+RLibStruct radare_plugin = {
 	.type = R_LIB_TYPE_CORE,
 	.data = &r_core_plugin_java,
 	.version = R2_VERSION

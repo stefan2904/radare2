@@ -121,22 +121,25 @@ void reil_print_inst(RAnalEsil *esil, RAnalReilInst *ins) {
 	char tmp_buf[REGBUFSZ];
 	int i;
 
-	if ((!ins) || (!esil)) return;
-
+	if ((!ins) || (!esil)) {
+		return;
+	}
 	esil->anal->cb_printf("%04"PFMT64x".%02"PFMT64x": %8s",
-			esil->Reil->addr,
-			esil->Reil->seq_num++,
-			ops[ins->opcode]);
+		esil->Reil->addr, esil->Reil->seq_num++, ops[ins->opcode]);
 	for (i = 0; i < 3; i++) {
-		if (i != 0)
+		if (i > 0) {
 			esil->anal->cb_printf (" ,");
+		}
+		if (!ins->arg[i]) {
+			continue;
+		}
 		if (ins->arg[i]->type == ARG_NONE) {
 			esil->anal->cb_printf ("%10s   ", ins->arg[i]->name);
 			continue;
 		}
 		if (ins->arg[i]->type == ARG_REG) {
-			strncpy (tmp_buf, REIL_REG_PREFIX, sizeof(tmp_buf) - 1);
-			strncat (tmp_buf, ins->arg[i]->name, sizeof(tmp_buf) - strlen(tmp_buf) - 1);
+			strncpy (tmp_buf, REIL_REG_PREFIX, sizeof (tmp_buf) - 1);
+			strncat (tmp_buf, ins->arg[i]->name, sizeof (tmp_buf) - strlen (tmp_buf) - 1);
 			esil->anal->cb_printf ("%10s:%02d", tmp_buf, ins->arg[i]->size);
 			continue;
 		}
@@ -151,6 +154,9 @@ void reil_cast_size(RAnalEsil *esil, RAnalReilArg *src, RAnalReilArg *dst) {
 	char tmp_buf[REGBUFSZ];
 	RAnalReilInst *ins;
 
+	if (!src || !dst) {
+		return;
+	}
 	// No need to case sizes if dst and src are of same size.
 	if (src->size == dst->size) {
 		reil_push_arg(esil, src);
@@ -235,11 +241,13 @@ static int reil_eq(RAnalEsil *esil) {
 		ins->arg[1] = R_NEW0 (RAnalReilArg);
 		if (!ins->arg[1]) {
 			reil_free_inst (ins);
+			R_FREE (src);
 			return false;
 		}
 		ins->arg[2] = R_NEW0 (RAnalReilArg);
 		if (!ins->arg[2]) {
 			reil_free_inst (ins);
+			R_FREE (src);
 			return false;
 		}
 		reil_make_arg (esil, ins->arg[1], " ");
@@ -1079,9 +1087,10 @@ static int setup_reil_ins(RAnalEsil *esil, const char *op) {
 
 R_API int r_anal_esil_to_reil_setup(RAnalEsil *esil, RAnal *anal, int romem,
 		int stats) {
-	if (!esil) return false;
-
-	esil->debug = 1;
+	if (!esil) {
+		return false;
+	}
+	esil->verbose = 2;
 	esil->anal = anal;
 	esil->trap = 0;
 	esil->trap_code = 0;
@@ -1100,7 +1109,7 @@ R_API int r_anal_esil_to_reil_setup(RAnalEsil *esil, RAnal *anal, int romem,
 
 	// Store the pc
 	const char *name = r_reg_get_name (esil->anal->reg, r_reg_get_name_idx ("PC"));
-	strncpy (esil->Reil->pc, name, sizeof(esil->Reil->pc) - 1);
+	strncpy (esil->Reil->pc, name, sizeof (esil->Reil->pc) - 1);
 
 	r_anal_esil_mem_ro(esil, romem);
 

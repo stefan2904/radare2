@@ -5,9 +5,11 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
+#include <stdio.h>
 
 #undef eprintf
-#define eprintf(x,y...) fprintf(stderr,x,##y)
+#define eprintf(...) fprintf(stderr,__VA_ARGS__)
 
 #ifndef SDB_API
 #if defined(__GNUC__) && __GNUC__ >= 4
@@ -17,11 +19,19 @@
 #endif
 #endif
 
+#ifndef SDB_IPI
+#if defined(__GNUC__) && __GNUC__ >= 4
+// __attribute__((visibility("hidden")))
+#endif
+#define SDB_IPI static
+#endif
+
+
 #if MINGW || __MINGW32__ || __MINGW64__
 #define __MINGW__ 1
 #endif
 
-#if __WIN32__ || __MINGW__ || __WINDOWS__
+#if __WIN32__ || __MINGW__ || __WINDOWS__ || _MSC_VER
 #define __SDB_WINDOWS__ 1
 #include <windows.h>
 #define DIRSEP '\\'
@@ -32,15 +42,16 @@
 #endif
 
 #include <inttypes.h>
-#if __CYGWIN__
-#define USE_MMAN 1
-#define ULLFMT "ll"
-#elif __SDB_WINDOWS__
-#define USE_MMAN 0
+#if __SDB_WINDOWS__ && !__CYGWIN__
+#define HAVE_MMAN 0
 #define ULLFMT "I64"
 #else
+#define HAVE_MMAN 1
 #define ULLFMT "ll"
-#define USE_MMAN 1
+#endif
+
+#ifndef USE_MMAN
+#define USE_MMAN HAVE_MMAN
 #endif
 
 #include <unistd.h>
@@ -62,8 +73,16 @@
 #define st64 long long
 #define boolt int
 // TODO: deprecate R_NEW
+#ifndef R_NEW
+//it means we are within sdb
 #define R_NEW(x) (x*)malloc(sizeof(x))
-#define R_NEW0(x) (x*)calloc(1,sizeof(x))
+#endif
+#ifndef R_NEW0
+#define R_NEW0(x) (x*)calloc(1, sizeof(x))
+#endif
+#ifndef R_FREE
+#define R_FREE(x) { free (x); x = NULL; }
+#endif
 #define UT32_MAX ((ut32)0xffffffff)
 #define UT64_MAX ((ut64)(0xffffffffffffffffLL))
 #endif
@@ -80,7 +99,7 @@
 #include "config.h"
 
 static inline int seek_set(int fd, off_t pos) {
-	return ((fd==-1) || (lseek (fd, (off_t) pos, SEEK_SET) == -1))? 0:1;
+	return ((fd == -1) || (lseek (fd, (off_t) pos, SEEK_SET) == -1))? 0:1;
 }
 
 static inline void ut32_pack(char s[4], ut32 u) {

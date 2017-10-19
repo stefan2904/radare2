@@ -35,7 +35,7 @@ static int r_debug_rap_attach(RDebug *dbg, int pid) {
 		if (!strcmp ("rap", d->plugin->name)) {
 			eprintf ("SUCCESS: rap attach with inferior rap rio worked\n");
 		} else {
-			eprintf ("ERROR: Underlaying IO descriptor is not a GDB one..\n");
+			eprintf ("ERROR: Underlaying IO descriptor is not a rap one..\n");
 		}
 	}
 	return true;
@@ -59,7 +59,7 @@ static char *r_debug_rap_reg_profile(RDebug *dbg) {
 	return out;
 }
 
-static int r_debug_rap_breakpoint (RBreakpointItem *bp, int set, void *user){
+static int r_debug_rap_breakpoint (RBreakpoint *bp, RBreakpointItem *b, bool set) {
 	//r_io_system (dbg->iob.io, "db");
 	return false;
 }

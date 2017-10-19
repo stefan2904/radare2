@@ -1,29 +1,17 @@
 include ../../../global.mk
 F=
-F+= linux-x86-32
-F+= linux-x86-64
-F+= darwin-x86-64
-F+= windows-x86-32
-F+= windows-x86-64
 F+= types
 F+= types-16
 F+= types-32
 F+= types-64
-F+= types-x86-32
-F+= types-x86-64
 F+= types-windows
 F+= types-x86-windows-32
 F+= types-x86-windows-64
 F+= types-linux
-F+= types-x86-linux-32
-F+= types-x86-linux-64
 F+= types-x86-osx-64
-F+= types-arm-linux-32
-F+= types-arm-linux-64
-F+= types-arm-32
-F+= types-arm-64
-F+= types-riscv-64
-F+= types-riscv-linux-64
+F+= types-arm-ios-16
+F+= types-arm-ios-32
+F+= types-arm-ios-64
 F+= cc-x86-64
 F+= cc-x86-32
 F+= cc-mips-32
@@ -50,6 +38,8 @@ BUILD_EXT_EXE=
 endif
 SDB=$(SDBPATH)/sdb${BUILD_EXT_EXE}
 
+FCNSIGNPATH=$(DESTDIR)$(DATADIR)/radare2/$(VERSION)/fcnsign
+
 all: ${SDB}
 	@$(MAKE) compile
 
@@ -57,16 +47,16 @@ compile: ${F_SDB}
 
 linux-x86-32.sdb: linux-x86-32
 
-%.sdb:%
+%.sdb:%.sdb.txt
 ifneq ($(SILENT),)
-	@echo SDB $<
-	@rm -f $<.sdb
-	@cat $< | ${SDB} $<.sdb =
-	@test -f $<.sdb
+	@echo SDB $@
+	@rm -f $@
+	@cat $< | ${SDB} $@ =
+	@test -f $@
 else
-	rm -f $<.sdb
-	cat $< | ${SDB} $<.sdb =
-	test -f $<.sdb
+	rm -f $@
+	cat $< | ${SDB} $@ =
+	test -f $@
 endif
 
 clean:
@@ -79,14 +69,16 @@ ${SDB}:
 .PHONY: all clean install install-symlink symstall
 
 install: ${F_SDB}
-	-rm -rf "${DESTDIR}${LIBDIR}/radare2/${VERSION}/fcnsign"
-	mkdir -p "${DESTDIR}${LIBDIR}/radare2/${VERSION}/fcnsign"
-	cp -f *.sdb "${DESTDIR}${LIBDIR}/radare2/${VERSION}/fcnsign"
+	rm -rf "${FCNSIGNPATH}"
+	mkdir -p "${FCNSIGNPATH}"
+	cp -f *.sdb "${FCNSIGNPATH}"
 
 CWD=$(shell pwd)
 symstall install-symlink: ${F_SDB}
-	mkdir -p "${DESTDIR}${LIBDIR}/radare2/${VERSION}/fcnsign"
-	for FILE in *.sdb ; do ln -fs "${CWD}/$$FILE" "${DESTDIR}${LIBDIR}/radare2/${VERSION}/fcnsign/$$FILE" ; done
+	cd ../../.. && mkdir -p "${FCNSIGNPATH}" && \
+	for FILE in $(shell cd libr/anal/d ; ls *.sdb); do \
+		ln -fs "$(CWD)/$$FILE" "$(FCNSIGNPATH)/$$FILE" ; \
+	done
 
 uninstall:
-	rm -rf "${DESTDIR}${LIBDIR}/radare2/fcnsign"
+	rm -rf "${FCNSIGNPATH}"

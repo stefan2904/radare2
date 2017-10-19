@@ -2,7 +2,7 @@ include ../../global.mk
 
 NAME=r_asm
 DEPS=r_syscall r_lang r_util r_parse
-DEPS+=r_flags r_cons r_reg
+DEPS+=r_flag r_cons r_reg
 CFLAGS+=-DCORELIB -Iarch/include -Iarch -I../../shlr
 CURDIR=p/
 
@@ -13,7 +13,7 @@ ifeq ($(WITHNONPIC),1)
 else
 include p/capstone.mk
 LDFLAGS+=${CS_LDFLAGS}
-LINK+=$(SHLR)/java/libr_java.a
+include $(STOP)/java/deps.mk
 endif
 
 .PHONY: all plugins

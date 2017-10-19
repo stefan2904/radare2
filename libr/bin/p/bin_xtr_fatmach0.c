@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2009-2016 - nibble, pancake */
+/* radare - LGPL - Copyright 2009-2017 - nibble, pancake */
 
 #include <r_types.h>
 #include <r_util.h>
@@ -13,57 +13,29 @@ static RBinXtrData * oneshot(RBin *bin, const ut8 *buf, ut64 size, int idx);
 static RList * oneshotall(RBin *bin, const ut8 *buf, ut64 size );
 static int free_xtr (void *xtr_obj) ;
 
-static int check(RBin *bin) {
-	ut8 *h, buf[4];
-	int off, ret = false;
-	RMmap *m = r_file_mmap (bin->file, false, 0);
-	if (!m || !m->buf) {
-		r_file_mmap_free (m);
-		return false;
-	}
-	h = m->buf;
-	if (m->len >= 0x300 && !memcmp (h, "\xca\xfe\xba\xbe", 4)) {
-		// XXX assuming BE
-		off = r_read_at_be32 (h, 4 * sizeof (int));
-		if (off > 0 && off < m->len) {
-			memcpy (buf, h + off, 4);
-			if (!memcmp (buf, "\xce\xfa\xed\xfe", 4) ||
-				!memcmp (buf, "\xfe\xed\xfa\xce", 4) ||
-				!memcmp (buf, "\xfe\xed\xfa\xcf", 4) ||
-				!memcmp (buf, "\xcf\xfa\xed\xfe", 4))
-				ret = true;
-		}
-	}
-	r_file_mmap_free (m);
-	return ret;
-}
-
-static int check_bytes(const ut8* bytes, ut64 sz) {
-	const ut8 *h;
+static bool checkHeader(const ut8 *h, int sz) {
 	ut8 buf[4];
-	int off, ret = false;
-
-	if (!bytes || sz < 0x300) {
-		return false;
-	}
-	// XXX assuming BE
-	off = r_read_at_be32 (bytes, 4 * sizeof (int));
-
-	h = bytes;
 	if (sz >= 0x300 && !memcmp (h, "\xca\xfe\xba\xbe", 4)) {
 		// XXX assuming BE
-		off = r_read_at_be32 (h, 4 * sizeof (int));
+		int off = r_read_at_be32 (h, 4 * sizeof (int));
 		if (off > 0 && off < sz) {
 			memcpy (buf, h + off, 4);
 			if (!memcmp (buf, "\xce\xfa\xed\xfe", 4) ||
 				!memcmp (buf, "\xfe\xed\xfa\xce", 4) ||
 				!memcmp (buf, "\xfe\xed\xfa\xcf", 4) ||
 				!memcmp (buf, "\xcf\xfa\xed\xfe", 4)) {
-				ret = true;
+				return true;
 			}
 		}
 	}
-	return ret;
+	return false;
+}
+
+static bool check_bytes(const ut8* bytes, ut64 sz) {
+	if (!bytes || sz < 0x300) {
+		return false;
+	}
+	return checkHeader (bytes, sz);
 }
 
 // TODO: destroy must be void?
@@ -86,7 +58,7 @@ static int size(RBin *bin) {
 }
 
 static inline void fill_metadata_info_from_hdr(RBinXtrMetadata *meta, struct MACH0_(mach_header) *hdr) {
-	meta->arch = MACH0_(get_cputype_from_hdr) (hdr);
+	meta->arch = strdup (MACH0_(get_cputype_from_hdr) (hdr));
 	meta->bits = MACH0_(get_bits_from_hdr) (hdr);
 	meta->machine = MACH0_(get_cpusubtype_from_hdr) (hdr);
 	meta->type = MACH0_(get_filetype_from_hdr) (hdr);
@@ -112,13 +84,14 @@ static RBinXtrData * extract(RBin* bin, int idx) {
 	}
 	hdr = MACH0_(get_hdr_from_bytes) (arch->b);
 	if (!hdr) {
+		free (metadata);
 		free (arch);
 		free (hdr);
 		return NULL;
 	}
 	fill_metadata_info_from_hdr (metadata, hdr);
 	res = r_bin_xtrdata_new (arch->b, arch->offset, arch->size,
-		narch, metadata, bin->sdb);
+		narch, metadata);
 	r_buf_free (arch->b);
 	free (arch);
 	free (hdr);
@@ -158,7 +131,7 @@ static RBinXtrData * oneshot(RBin *bin, const ut8 *buf, ut64 size, int idx) {
 		return NULL;
 	}
 	fill_metadata_info_from_hdr (metadata, hdr);
-	res = r_bin_xtrdata_new (arch->b, arch->offset, arch->size, narch, metadata, bin->sdb);
+	res = r_bin_xtrdata_new (arch->b, arch->offset, arch->size, narch, metadata);
 	r_buf_free (arch->b);
 	free (arch);
 	free (hdr);
@@ -171,14 +144,18 @@ static RList * extractall(RBin *bin) {
 	RBinXtrData *data = NULL;
 
 	data = extract (bin, i);
-	if (!data) return res;
+	if (!data) {
+		return res;
+	}
 
 	// XXX - how do we validate a valid narch?
 	narch = data->file_count;
 	res = r_list_newf (r_bin_xtrdata_free);
+	if (!res) {
+		return NULL;	
+	}	
 	r_list_append (res, data);
 	for (i = 1; data && i < narch; i++) {
-		data = NULL;
 		data = extract (bin, i);
 		r_list_append (res, data);
 	}
@@ -190,13 +167,14 @@ static RList * oneshotall(RBin *bin, const ut8 *buf, ut64 size) {
 	int narch, i = 0;
 	RBinXtrData *data = oneshot (bin, buf, size, i);
 
-	if (!data) return res;
+	if (!data) {
+		return res;
+	}
 	// XXX - how do we validate a valid narch?
 	narch = data->file_count;
 	res = r_list_newf (r_bin_xtrdata_free);
 	r_list_append (res, data);
 	for (i = 1; data && i < narch; i++) {
-		data = NULL;
 		data = oneshot (bin, buf, size, i);
 		r_list_append (res, data);
 	}
@@ -208,7 +186,6 @@ RBinXtrPlugin r_bin_xtr_plugin_fatmach0 = {
 	.name = "fatmach0",
 	.desc = "fat mach0 bin extractor plugin",
 	.license = "LGPL3",
-	.check = &check,
 	.load = &load,
 	.size = &size,
 	.extract = &extract,

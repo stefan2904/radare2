@@ -8,6 +8,14 @@ static struct r_syscall_regs_t fastcall_arm [R_SYSCALL_ARGS] = {
 	{{ NULL }}
 };
 
+static struct r_syscall_regs_t fastcall_arm64 [R_SYSCALL_ARGS] = {
+	{{ "x0", NULL }}, //, { "w0", NULL }},
+	{{ "x0", "x1", NULL}}, //, { "w0", "w1", NULL } },
+	{{ "x0", "x1", "x2", NULL}}, //, { "w0", "w1", "w2", NULL }},
+	{{ "x0", "x1", "x2", "x3", NULL }}, //, { "w0", "w1", "w2", "w3", NULL }},
+	{{ NULL }}
+};
+
 static struct r_syscall_regs_t fastcall_mips [R_SYSCALL_ARGS] = {
 	{{ "a0", NULL }},
 	{{ "a0", "a1", NULL }},
@@ -28,6 +36,15 @@ static struct r_syscall_regs_t fastcall_x86_32 [R_SYSCALL_ARGS] = {
 
 // TODO: x86-64-microsoft RCX, RDX, R8, R9 
 static struct r_syscall_regs_t fastcall_x86_64 [R_SYSCALL_ARGS] = {
+	{{ "rax", "rdi", NULL }},
+	{{ "rax", "rdi", "rsi", NULL }},
+	{{ "rax", "rdi", "rsi", "rdx", NULL }},
+	{{ "rax", "rdi", "rsi", "rdx", "rdx", NULL }},
+	{{ "rax", "rdi", "rsi", "rdx", "rdx", "r8", NULL }},
+	{{ NULL }}
+};
+
+static struct r_syscall_regs_t fastcall_x86_64_msvc [R_SYSCALL_ARGS] = {
 	{{ "rdi", NULL }},
 	{{ "rdi", "rsi", NULL }},
 	{{ "rdi", "rsi", "rdx", NULL }},

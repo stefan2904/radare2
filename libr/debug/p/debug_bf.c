@@ -153,12 +153,12 @@ static char *r_debug_bf_reg_profile(RDebug *dbg) {
 	);
 }
 
-static int r_debug_bf_breakpoint (RBreakpointItem *bp, int set, void *user) {
+static int r_debug_bf_breakpoint (void *bp, RBreakpointItem *b, bool set) {
 	//r_io_system (dbg->iob.io, "db");
 	return false;
 }
 
-static int r_debug_bf_kill(RDebug *dbg, int pid, int tid, int sig) {
+static bool r_debug_bf_kill(RDebug *dbg, int pid, int tid, int sig) {
 	RIOBdescbg *o = dbg->iob.io->desc->data;
 	bfvm_reset (o->bfvm);
 	return true;

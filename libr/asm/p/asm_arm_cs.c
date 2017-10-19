@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2013-2016 - pancake */
+/* radare2 - LGPL - Copyright 2013-2017 - pancake */
 
 #include <r_asm.h>
 #include <r_lib.h>
@@ -9,9 +9,12 @@ bool arm64ass(const char *str, ut64 addr, ut32 *op);
 static int check_features(RAsm *a, cs_insn *insn);
 static csh cd = 0;
 
+#include "cs_mnemonics.c"
+
 static int disassemble(RAsm *a, RAsmOp *op, const ut8 *buf, int len) {
 	static int omode = -1;
 	static int obits = 32;
+	bool disp_hash = a->immdisp;
 	cs_insn* insn = NULL;
 	cs_mode mode = 0;
 	int ret, n = 0;
@@ -24,13 +27,26 @@ static int disassemble(RAsm *a, RAsmOp *op, const ut8 *buf, int len) {
 		obits = a->bits;
 	}
 
-	if (a->features && strstr (a->features, "mclass"))
-		mode |= CS_MODE_MCLASS;
-	if (a->features && strstr (a->features, "v8"))
-		mode |= CS_MODE_V8;
-	op->size = 4;
-	op->buf_asm[0] = 0;
-	if (cd == 0) {
+	if (a->cpu) {
+		if (strstr (a->cpu, "cortex")) {
+			mode |= CS_MODE_MCLASS;
+		}
+		if (a->bits != 64) {
+			if (strstr (a->cpu, "v8")) {
+				mode |= CS_MODE_V8;
+			}
+		}
+	}
+	if (a->features && a->bits != 64) {
+		if (strstr (a->features, "v8")) {
+			mode |= CS_MODE_V8;
+		}
+	}
+	if (op) {
+		op->size = 4;
+		op->buf_asm[0] = 0;
+	}
+	if (!cd || mode != omode) {
 		ret = (a->bits == 64)?
 			cs_open (CS_ARCH_ARM64, mode, &cd):
 			cs_open (CS_ARCH_ARM, mode, &cd);
@@ -41,42 +57,55 @@ static int disassemble(RAsm *a, RAsmOp *op, const ut8 *buf, int len) {
 	}
 	if (a->syntax == R_ASM_SYNTAX_REGNUM) {
 		cs_option (cd, CS_OPT_SYNTAX, CS_OPT_SYNTAX_NOREGNAME);
-	} else cs_option (cd, CS_OPT_SYNTAX, CS_OPT_SYNTAX_DEFAULT);
+	} else {
+		cs_option (cd, CS_OPT_SYNTAX, CS_OPT_SYNTAX_DEFAULT);
+	}
 	if (a->features && *a->features) {
 		cs_option (cd, CS_OPT_DETAIL, CS_OPT_ON);
 	} else {
 		cs_option (cd, CS_OPT_DETAIL, CS_OPT_OFF);
+	}
+	if (!buf) {
+		goto beach;
 	}
 	n = cs_disasm (cd, buf, R_MIN (4, len), a->pc, 1, &insn);
 	if (n < 1) {
 		ret = -1;
 		goto beach;
 	}
-	op->size = 0;
-	if (insn->size<1) {
+	if (op) {
+		op->size = 0;
+	}
+	if (insn->size < 1) {
 		ret = -1;
 		goto beach;
 	}
 	if (a->features && *a->features) {
-		if (!check_features (a, insn)) {
+		if (!check_features (a, insn) && op) {
 			op->size = insn->size;
 			strcpy (op->buf_asm, "illegal");
 		}
 	}
-	if (!op->size) {
+	if (op && !op->size) {
 		op->size = insn->size;
 		snprintf (op->buf_asm, R_ASM_BUFSIZE, "%s%s%s",
 			insn->mnemonic,
 			insn->op_str[0]?" ":"",
 			insn->op_str);
-		r_str_rmch (op->buf_asm, '#');
+		if (!disp_hash) {
+			r_str_rmch (op->buf_asm, '#');
+		}
 	}
 	cs_free (insn, n);
 	beach:
-	//cs_close (&cd);
-	if (!op->buf_asm[0])
-		strcpy (op->buf_asm, "invalid");
-	return op->size;
+	cs_close (&cd);
+	if (op) {
+		if (!op->buf_asm[0]) {
+			strcpy (op->buf_asm, "invalid");
+		}
+		return op->size;
+	}
+	return ret;
 }
 
 static int assemble(RAsm *a, RAsmOp *op, const char *buf) {
@@ -124,20 +153,21 @@ static int assemble(RAsm *a, RAsmOp *op, const char *buf) {
 RAsmPlugin r_asm_plugin_arm_cs = {
 	.name = "arm",
 	.desc = "Capstone ARM disassembler",
-	.cpus = "v8,cortex-m",
+	.cpus = "v8,cortex",
+	.features = "v8",
 	.license = "BSD",
 	.arch = "arm",
 	.bits = 16 | 32 | 64,
 	.endian = R_SYS_ENDIAN_LITTLE | R_SYS_ENDIAN_BIG,
 	.disassemble = &disassemble,
+	.mnemonics = mnemonics,
 	.assemble = &assemble,
-	.features = "no-mclass,v8"
 #if 0
-		// arm32 and arm64
-		"crypto,databarrier,divide,fparmv8,multpro,neon,t2extractpack,"
-		"thumb2dsp,trustzone,v4t,v5t,v5te,v6,v6t2,v7,v8,vfp2,vfp3,vfp4,"
-		"arm,mclass,notmclass,thumb,thumb1only,thumb2,prev8,fpvmlx,"
-		"mulops,crc,dpvfp,v6m"
+	// arm32 and arm64
+	"crypto,databarrier,divide,fparmv8,multpro,neon,t2extractpack,"
+	"thumb2dsp,trustzone,v4t,v5t,v5te,v6,v6t2,v7,v8,vfp2,vfp3,vfp4,"
+	"arm,mclass,notmclass,thumb,thumb1only,thumb2,prev8,fpvmlx,"
+	"mulops,crc,dpvfp,v6m"
 #endif
 };
 

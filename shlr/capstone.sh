@@ -8,11 +8,11 @@ if [ -d capstone -a ! -d capstone/.git ]; then
 	echo "[capstone] release with no git?"
 	cd capstone
 	for PATCH in ../capstone-patches/* ; do
-		patch -Rp1 < $PATCH
+		yes n | patch -Rp1 < $PATCH
 	done
 else 
 	if [ ! -d capstone ]; then 
-		git clone "${CS_URL}" capstone || exit 1
+		git clone -b "${CS_BRA}" --depth 10 "${CS_URL}" capstone || exit 1
 	fi
 	cd capstone || exit 1
 	if [ -n "${CS_REV}" ]; then

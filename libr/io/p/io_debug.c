@@ -1,9 +1,11 @@
-/* radare - LGPL - Copyright 2007-2016 - pancake */
+/* radare - LGPL - Copyright 2007-2017 - pancake */
 
+#include <errno.h>
 #include <r_io.h>
 #include <r_lib.h>
 #include <r_util.h>
 #include <r_debug.h> /* only used for BSD PTRACE redefinitions */
+#include <string.h>
 
 #define USE_RARUN 0
 
@@ -14,14 +16,6 @@
 #endif
 
 #if DEBUGGER && DEBUGGER_SUPPORTED
-
-static void my_io_redirect (RIO *io, const char *ref, const char *file) {
-	free (io->referer);
-	io->referer = ref? strdup (ref): NULL;
-	free (io->redirect);
-	io->redirect = file? strdup (file): NULL;
-}
-
 #define MAGIC_EXIT 123
 
 #include <signal.h>
@@ -50,11 +44,8 @@ static void my_io_redirect (RIO *io, const char *ref, const char *file) {
 #include <mach-o/nlist.h>
 #endif
 
-#if __APPLE__ || __BSD__
-static void inferior_abort_handler(int pid) {
-        eprintf ("Inferior received signal SIGABRT. Executing BKPT.\n");
-}
-#endif
+
+static void trace_me ();
 
 /*
  * Creates a new process and returns the result:
@@ -67,42 +58,61 @@ static void inferior_abort_handler(int pid) {
 #include <winbase.h>
 #include <psapi.h>
 
+typedef struct {
+	HANDLE hnd;
+	ut64 winbase;
+} RIOW32;
+
+typedef struct {
+	int pid;
+	int tid;
+	ut64 winbase;
+	PROCESS_INFORMATION pi;
+} RIOW32Dbg;
+
+static ut64 winbase;	//HACK
+static int wintid;
+
 static int setup_tokens() {
-        HANDLE tok;
-        TOKEN_PRIVILEGES tp;
-        DWORD err;
+	HANDLE tok = NULL;
+	TOKEN_PRIVILEGES tp;
+	DWORD err = -1;
 
-        tok = NULL;
-        err = -1;
-
-        if (!OpenProcessToken (GetCurrentProcess (), TOKEN_ADJUST_PRIVILEGES, &tok))
+	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_ADJUST_PRIVILEGES, &tok)) {
 		goto err_enable;
-
-        tp.PrivilegeCount = 1;
-        if (!LookupPrivilegeValue (NULL,  SE_DEBUG_NAME, &tp.Privileges[0].Luid))
+	}
+	tp.PrivilegeCount = 1;
+	if (!LookupPrivilegeValue (NULL,  SE_DEBUG_NAME, &tp.Privileges[0].Luid)) {
 		goto err_enable;
-
-        //tp.Privileges[0].Attributes = enable ? SE_PRIVILEGE_ENABLED : 0;
-        tp.Privileges[0].Attributes = 0; //SE_PRIVILEGE_ENABLED;
-        if (!AdjustTokenPrivileges (tok, 0, &tp, sizeof (tp), NULL, NULL))
+	}
+	// tp.Privileges[0].Attributes = enable ? SE_PRIVILEGE_ENABLED : 0;
+	tp.Privileges[0].Attributes = 0; //SE_PRIVILEGE_ENABLED;
+	if (!AdjustTokenPrivileges (tok, 0, &tp, sizeof (tp), NULL, NULL)) {
 		goto err_enable;
-        err = 0;
+	}
+	err = 0;
 err_enable:
-        if (tok != NULL) CloseHandle (tok);
-        if (err) r_sys_perror ("setup_tokens");
-        return err;
+	if (tok) {
+		CloseHandle (tok);
+	}
+	if (err) {
+		r_sys_perror ("setup_tokens");
+	}
+	return err;
 }
 
 static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 	PROCESS_INFORMATION pi;
-        STARTUPINFO si = { sizeof (si) };
-        DEBUG_EVENT de;
+	STARTUPINFOA si = { sizeof (si) };
+	DEBUG_EVENT de;
 	int pid, tid;
 	HANDLE th = INVALID_HANDLE_VALUE;
-	if (!*cmd) return -1;
+	if (!*cmd) {
+		return -1;
+	}
 	setup_tokens ();
-	char *_cmd = io->args ? r_str_concatf (strdup (cmd), " %s", io->args) :
-				strdup (cmd);
+	char *_cmd = io->args ? r_str_appendf (strdup (cmd), " %s", io->args) :
+		strdup (cmd);
 	char **argv = r_str_argv (_cmd, NULL);
 	// We need to build a command line with quoted argument and escaped quotes
 	int cmd_len = 0;
@@ -110,8 +120,9 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 	while (argv[i]) {
 		char *current = argv[i];
 		int quote_count = 0;
-		while ((current = strchr (current, '"')))
+		while ((current = strchr (current, '"'))) {
 			quote_count ++;
+		}
 		cmd_len += strlen (argv[i]);
 		cmd_len += quote_count; // The quotes will add one backslash each
 		cmd_len += 2; // Add two enclosing quotes;
@@ -123,9 +134,9 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 	int cmd_i = 0; // Next character to write in cmdline
 	i = 0;
 	while (argv[i]) {
-		if (i != 0)
+		if (i != 0) {
 			cmdline[cmd_i++] = ' ';
-
+		}
 		cmdline[cmd_i++] = '"';
 
 		int arg_i = 0; // Index of current character in orginal argument
@@ -143,80 +154,184 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 	}
 	cmdline[cmd_i] = '\0';
 
-        if (!CreateProcess (argv[0], cmdline, NULL, NULL, FALSE,
-			CREATE_NEW_CONSOLE | DEBUG_ONLY_THIS_PROCESS,
-			NULL, NULL, &si, &pi)) {
-		r_sys_perror ("CreateProcess");
+	if (!CreateProcessA (argv[0], cmdline, NULL, NULL, FALSE,
+						 CREATE_NEW_CONSOLE | DEBUG_ONLY_THIS_PROCESS,
+						 NULL, NULL, &si, &pi)) {
+		r_sys_perror ("fork_and_ptraceme/CreateProcess");
 		return -1;
-        }
+	}
 	free (cmdline);
 	r_str_argv_free (argv);
-        /* get process id and thread id */
-        pid = pi.dwProcessId;
-        tid = pi.dwThreadId;
+	/* get process id and thread id */
+	pid = pi.dwProcessId;
+	tid = pi.dwThreadId;
 
-        /* catch create process event */
-        if (!WaitForDebugEvent (&de, 10000)) goto err_fork;
+	/* catch create process event */
+	if (!WaitForDebugEvent (&de, 10000)) goto err_fork;
 
-        /* check if is a create process debug event */
-        if (de.dwDebugEventCode != CREATE_PROCESS_DEBUG_EVENT) {
+	/* check if is a create process debug event */
+	if (de.dwDebugEventCode != CREATE_PROCESS_DEBUG_EVENT) {
 		eprintf ("exception code 0x%04x\n", (ut32)de.dwDebugEventCode);
 		goto err_fork;
-        }
+	}
 
-	if (th != INVALID_HANDLE_VALUE) CloseHandle (th);
-
+	if (th != INVALID_HANDLE_VALUE) {
+		CloseHandle (th);
+	}
 	eprintf ("Spawned new process with pid %d, tid = %d\n", pid, tid);
-	io->winbase = de.u.CreateProcessInfo.lpBaseOfImage;
-	io->wintid = tid;
-	io->winpid = pid;
+	winbase = (ut64)de.u.CreateProcessInfo.lpBaseOfImage;
+	wintid = tid;
 	return pid;
 
 err_fork:
 	eprintf ("ERRFORK\n");
-        TerminateProcess (pi.hProcess, 1);
+	TerminateProcess (pi.hProcess, 1);
 	if (th != INVALID_HANDLE_VALUE) CloseHandle (th);
-        return -1;
+	return -1;
 }
 #else // windows
 
+#if (__APPLE__ && __POWERPC__) || !__APPLE__
+#if __APPLE__ || __BSD__
+static void inferior_abort_handler(int pid) {
+	eprintf ("Inferior received signal SIGABRT. Executing BKPT.\n");
+}
+#endif
+
+// UNUSED
 static void trace_me () {
 #if __APPLE__
 	signal (SIGTRAP, SIG_IGN); //NEED BY STEP
 #endif
 #if __APPLE__ || __BSD__
-/* we can probably remove this #if..as long as PT_TRACE_ME is redefined for OSX in r_debug.h */
+	/* we can probably remove this #if..as long as PT_TRACE_ME is redefined for OSX in r_debug.h */
 	signal (SIGABRT, inferior_abort_handler);
 	if (ptrace (PT_TRACE_ME, 0, 0, 0) != 0) {
+		r_sys_perror ("ptrace-traceme");
+	}
 #else
 	if (ptrace (PTRACE_TRACEME, 0, NULL, NULL) != 0) {
-#endif
 		r_sys_perror ("ptrace-traceme");
 		exit (MAGIC_EXIT);
+	}
+#endif
+}
+#endif
+
+void handle_posix_error(int err) {
+	switch (err) {
+	case 0:
+		// eprintf ("Success\n");
+		break;
+	case 22:
+		eprintf ("posix_spawnp: Invalid argument\n");
+		break;
+	case 86:
+		eprintf ("Unsupported architecture. Please specify -b 32\n");
+		break;
+	default:
+		eprintf ("posix_spawnp: unknown error %d\n", err);
+		perror ("posix_spawnp");
+		break;
+	}
+}
+
+static RRunProfile* _get_run_profile(RIO *io, int bits, char **argv) {
+	char *expr = NULL;
+	int i;
+	RRunProfile *rp = r_run_new (NULL);
+	if (!rp) {
+		return NULL;
+	}
+	for (i = 0; argv[i]; i++) {
+		rp->_args[i] = argv[i];
+	}
+	rp->_args[i] = NULL;
+	if (!argv[0]) {
+		r_run_free (rp);
+		return NULL;
+	}
+	rp->_program = strdup (argv[0]);
+
+	rp->_dodebug = true;
+	if (io->runprofile && *io->runprofile) {
+		if (!r_run_parsefile (rp, io->runprofile)) {
+			eprintf ("Can't find profile '%s'\n", io->runprofile);
+			r_run_free (rp);
+			return NULL;
+		}
+		if (strstr (io->runprofile, R_SYS_DIR ".rarun2.")) {
+			(void)r_file_rm (io->runprofile);
+		}
+	}
+	if (bits == 64) {
+		r_run_parseline (rp, expr=strdup ("bits=64"));
+	} else if (bits == 32) {
+		r_run_parseline (rp, expr=strdup ("bits=32"));
+	}
+	free (expr);
+	if (r_run_config_env (rp)) {
+		eprintf ("Can't config the environment.\n");
+		r_run_free (rp);
+		return NULL;
+	}
+	return rp;
+}
+
+#if __APPLE__ && !__POWERPC__
+
+static void handle_redirection(char *path, int flag, posix_spawn_file_actions_t *fileActions, int fd) {
+	int mode = S_IRUSR | S_IWUSR;
+	posix_spawn_file_actions_addopen (fileActions, fd, path, flag, mode);
+}
+
+static void handle_posix_redirection(RRunProfile *rp, posix_spawn_file_actions_t *fileActions) {
+	int flag = 0;
+	if (rp->_stdin) {
+		flag |= O_RDONLY;
+		handle_redirection (rp->_stdin, flag, fileActions, STDIN_FILENO);
+	}
+	if (rp->_stdout) {
+		flag |= O_WRONLY;
+		handle_redirection (rp->_stdout, flag, fileActions, STDOUT_FILENO);
+	}
+	if (rp->_stderr) {
+		flag |= O_WRONLY;
+		handle_redirection (rp->_stderr, flag, fileActions, STDERR_FILENO);
 	}
 }
 
 // __UNIX__ (not windows)
-static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
+static int fork_and_ptraceme_for_mac(RIO *io, int bits, const char *cmd) {
 	bool runprofile = io->runprofile && *(io->runprofile);
+	pid_t p = -1;
 	char **argv;
-#if __APPLE__ && !__POWERPC__
-	if (!runprofile) {
+	posix_spawn_file_actions_t fileActions;
+	ut32 ps_flags = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK;
+	sigset_t no_signals;
+	sigset_t all_signals;
+	size_t copied = 1;
+	cpu_type_t cpu = CPU_TYPE_ANY;
+	posix_spawnattr_t attr = {0};
+	posix_spawnattr_init (&attr);
+
+	sigemptyset (&no_signals);
+	sigfillset (&all_signals);
+	posix_spawnattr_setsigmask (&attr, &no_signals);
+	posix_spawnattr_setsigdefault (&attr, &all_signals);
+
+	posix_spawn_file_actions_init (&fileActions);
+	posix_spawn_file_actions_addinherit_np (&fileActions, STDIN_FILENO);
+	posix_spawn_file_actions_addinherit_np (&fileActions, STDOUT_FILENO);
+	posix_spawn_file_actions_addinherit_np (&fileActions, STDERR_FILENO);
+
+	ps_flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+	ps_flags |= POSIX_SPAWN_START_SUSPENDED;
 #define _POSIX_SPAWN_DISABLE_ASLR 0x0100
-		posix_spawn_file_actions_t fileActions;
-		ut32 ps_flags = POSIX_SPAWN_SETSIGDEF |
-				POSIX_SPAWN_SETSIGMASK;
-   		sigset_t no_signals;
-    		sigset_t all_signals;
-    		sigemptyset (&no_signals);
-    		sigfillset (&all_signals);
-		posix_spawnattr_t attr = {0};
-		size_t copied = 1;
-		cpu_type_t cpu;
-		pid_t p = -1;
+	if (!runprofile) {
 		int ret, useASLR = io->aslr;
 		char *_cmd = io->args
-			? r_str_concatf (strdup (cmd), " %s", io->args)
+			? r_str_appendf (strdup (cmd), " %s", io->args)
 			: strdup (cmd);
 		argv = r_str_argv (_cmd, NULL);
 		if (!argv) {
@@ -229,25 +344,12 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 			eprintf ("Invalid execvp\n");
 			return -1;
 		}
-		posix_spawnattr_init (&attr);
 		if (useASLR != -1) {
 			if (!useASLR) {
 				ps_flags |= _POSIX_SPAWN_DISABLE_ASLR;
 			}
 		}
-
-		posix_spawn_file_actions_init (&fileActions);
-		posix_spawn_file_actions_addinherit_np (&fileActions, STDIN_FILENO);
-		posix_spawn_file_actions_addinherit_np (&fileActions, STDOUT_FILENO);
-		posix_spawn_file_actions_addinherit_np (&fileActions, STDERR_FILENO);
-		ps_flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
-		ps_flags |= POSIX_SPAWN_START_SUSPENDED;
-
-   		posix_spawnattr_setsigmask (&attr, &no_signals);
-    		posix_spawnattr_setsigdefault (&attr, &all_signals);
-
 		(void)posix_spawnattr_setflags (&attr, ps_flags);
-		cpu = CPU_TYPE_ANY;
 #if __x86_64__
 		if (bits == 32) {
 			cpu = CPU_TYPE_I386;
@@ -261,30 +363,59 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 				argv[0] = dst;
 			}
 		}
-		ret = posix_spawnp (&p, argv[0], &fileActions, &attr, argv, NULL);
-		switch (ret) {
-		case 0:
-			// eprintf ("Success\n");
-			break;
-		case 22:
-			eprintf ("posix_spawnp: Invalid argument\n");
-			break;
-		case 86:
-			eprintf ("Unsupported architecture. Please specify -b 32\n");
-			break;
-		default:
-			eprintf ("posix_spawnp: unknown error %d\n", ret);
-			perror ("posix_spawnp");
-			break;
+		// XXX: this is a workaround to fix spawning programs with spaces in path
+		if (strstr (argv[0], "\\ ")) {
+			argv[0] = r_str_replace (argv[0], "\\ ", " ", true);
 		}
+
+		ret = posix_spawnp (&p, argv[0], &fileActions, &attr, argv, NULL);
+		handle_posix_error (ret);
 		posix_spawn_file_actions_destroy (&fileActions);
 		r_str_argv_free (argv);
 		free (_cmd);
 		return p;
 	}
+	int ret;
+	argv = r_str_argv (cmd, NULL);
+	if (!argv) {
+		posix_spawn_file_actions_destroy (&fileActions);
+		return -1;
+	}
+	RRunProfile *rp = _get_run_profile (io, bits, argv);
+	if (!rp) {
+		r_str_argv_free (argv);
+		posix_spawn_file_actions_destroy (&fileActions);
+		return -1;
+	}
+	handle_posix_redirection (rp, &fileActions);
+	if (rp->_args[0]) {
+		if (!rp->_aslr) {
+			ps_flags |= _POSIX_SPAWN_DISABLE_ASLR;
+		}
+#if __x86_64__
+		if (rp->_bits == 32) {
+			cpu = CPU_TYPE_I386;
+		}
 #endif
-	int ret, status, child_pid;
+		(void)posix_spawnattr_setflags (&attr, ps_flags);
+		posix_spawnattr_setbinpref_np (&attr, 1, &cpu, &copied);
+		ret = posix_spawnp (&p, rp->_args[0], &fileActions, &attr, rp->_args, NULL);
+		handle_posix_error (ret);
+	}
+	r_str_argv_free (argv);
+	r_run_free (rp);
+	posix_spawn_file_actions_destroy (&fileActions);
+	return p; // -1 ?
+}
+#endif
 
+static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
+#if __APPLE__ && !__POWERPC__
+	return fork_and_ptraceme_for_mac(io, bits, cmd);
+#else
+	int ret, status, child_pid;
+	bool runprofile = io->runprofile && *(io->runprofile);
+	char **argv;
 	child_pid = r_sys_fork ();
 	switch (child_pid) {
 	case -1:
@@ -292,30 +423,13 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 		break;
 	case 0:
 		if (runprofile) {
-			char *expr = NULL;
-			int i;
-			RRunProfile *rp = r_run_new (NULL);
 			argv = r_str_argv (cmd, NULL);
-			for (i = 0; argv[i]; i++) {
-				rp->_args[i] = argv[i];
+			if (!argv) {
+				exit(1);
 			}
-			rp->_args[i] = NULL;
-			rp->_program = argv[0];
-			rp->_dodebug = true;
-			if (io->runprofile && *io->runprofile) {
-				if (!r_run_parsefile (rp, io->runprofile)) {
-					eprintf ("Can't find profile '%s'\n",
-						io->runprofile);
-					exit (MAGIC_EXIT);
-				}
-			}
-			if (bits == 64)
-				r_run_parseline (rp, expr=strdup ("bits=64"));
-			else if (bits == 32)
-				r_run_parseline (rp, expr=strdup ("bits=32"));
-			free (expr);
-			if (r_run_config_env (rp)) {
-				eprintf ("Can't config the environment.\n");
+			RRunProfile *rp = _get_run_profile (io, bits, argv);
+			if (!rp) {
+				r_str_argv_free (argv);
 				exit (1);
 			}
 			trace_me ();
@@ -325,7 +439,7 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 			exit (1);
 		} else {
 			char *_cmd = io->args ?
-				r_str_concatf (strdup (cmd), " %s", io->args) :
+				r_str_appendf (strdup (cmd), " %s", io->args) :
 				strdup (cmd);
 
 			trace_me ();
@@ -336,9 +450,13 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 			}
 			if (argv && *argv) {
 				int i;
-				for (i = 3; i < 1024; i++)
+				for (i = 3; i < 1024; i++) {
 					(void)close (i);
-				execvp (argv[0], argv);
+				}
+				if (execvp (argv[0], argv) == -1) {
+					eprintf ("Could not execvp: %s\n", strerror (errno));
+					exit (MAGIC_EXIT);
+				}
 			} else {
 				eprintf ("Invalid execvp\n");
 			}
@@ -369,6 +487,7 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 		break;
 	}
 	return child_pid;
+#endif
 }
 #endif
 
@@ -389,7 +508,7 @@ static int get_pid_of(RIO *io, const char *procname) {
 		RListIter *iter;
 		RDebugPid *proc;
 		RDebug *d = c->dbg;
-		RList *pids = d->h->pids (0);
+		RList *pids = d->h->pids (d, 0);
 		r_list_foreach (pids, iter, proc) {
 			if (strstr (proc->path, procname)) {
 				eprintf ("Matching PID %d %s\n", proc->pid, proc->path);
@@ -403,6 +522,8 @@ static int get_pid_of(RIO *io, const char *procname) {
 }
 
 static RIODesc *__open(RIO *io, const char *file, int rw, int mode) {
+	RIOPlugin *_plugin;
+	RIODesc *ret = NULL;
 	char uri[128];
 	if (!strncmp (file, "waitfor://", 10)) {
 		const char *procname = file + 10;
@@ -426,7 +547,7 @@ static RIODesc *__open(RIO *io, const char *file, int rw, int mode) {
 		snprintf (uri, sizeof (uri), "dbg://%d", target_pid);
 		file = uri;
 	}
-	if (__plugin_open (io, file,  0)) {
+	if (__plugin_open (io, file, 0)) {
 		const char *pidfile = file + 6;
 		char *endptr;
 		int pid = (int)strtol (pidfile, &endptr, 10);
@@ -440,35 +561,74 @@ static RIODesc *__open(RIO *io, const char *file, int rw, int mode) {
 			}
 #if __WINDOWS__
 			sprintf (uri, "w32dbg://%d", pid);
+			_plugin = r_io_plugin_resolve (io, (const char *)uri, false);
+			if (!_plugin || !_plugin->open) {
+				return NULL;
+			}
+			if ((ret = _plugin->open (io, uri, rw, mode))) {
+				RIOW32Dbg *w32 = (RIOW32Dbg *)ret->data;
+				w32->winbase = winbase;
+				w32->tid = wintid;
+			}
+
 #elif __APPLE__
-			sprintf (uri, "mach://%d", pid);
+			sprintf (uri, "smach://%d", pid);		//s is for spawn
+			_plugin = r_io_plugin_resolve (io, (const char *)uri + 1, false);
+			if (!_plugin || !_plugin->open || !_plugin->close) {
+				return NULL;
+			}
+			ret = _plugin->open (io, uri, rw, mode);
 #else
 			// TODO: use io_procpid here? faster or what?
 			sprintf (uri, "ptrace://%d", pid);
+			_plugin = r_io_plugin_resolve (io, (const char *)uri, false);
+			if (!_plugin || !_plugin->open) {
+				return NULL;
+			}
+			ret = _plugin->open (io, uri, rw, mode);
 #endif
-			my_io_redirect (io, file, uri);
 		} else {
 			sprintf (uri, "attach://%d", pid);
-			my_io_redirect (io, file, uri);
+			_plugin = r_io_plugin_resolve (io, (const char *)uri, false);
+			if (!_plugin || !_plugin->open) {
+				return NULL;
+			}
+			ret = _plugin->open (io, uri, rw, mode);
 		}
-		return NULL;
+		if (ret) {
+			ret->plugin = _plugin;
+			ret->referer = strdup (file);		//kill this
+		}
 	}
-	my_io_redirect (io, file, NULL);
-	return NULL;
+	return ret;
+}
+
+static int __close (RIODesc *desc) {
+	int ret = -2;
+	eprintf ("something went wrong\n");
+	if (desc) {
+		eprintf ("trying to close %d with io_debug\n", desc->fd);
+		ret = -1;
+	}
+	r_sys_backtrace ();
+	return ret;
 }
 
 RIOPlugin r_io_plugin_debug = {
 	.name = "debug",
-        .desc = "Native debugger (dbg:///bin/ls dbg://1388 pidof:// waitfor://)",
+	.desc = "Native debugger (dbg:///bin/ls dbg://1388 pidof:// waitfor://)",
 	.license = "LGPL3",
-        .open = __open,
-        .check = __plugin_open,
+	.author = "pancake",
+	.version = "0.2.0",
+	.open = __open,
+	.close = __close,
+	.check = __plugin_open,
 	.isdbg = true,
 };
 #else
 RIOPlugin r_io_plugin_debug = {
 	.name = "debug",
-        .desc = "Debug a program or pid. (NOT SUPPORTED FOR THIS PLATFORM)",
+	.desc = "Debug a program or pid. (NOT SUPPORTED FOR THIS PLATFORM)",
 };
 #endif
 

@@ -1,15 +1,47 @@
-/* radare2 - LGPL - Copyright 2009-2016 - pancake */
+/* radare2 - LGPL - Copyright 2009-2017 - pancake */
 
 #include <stddef.h>
 #include <stdbool.h>
 #include "r_core.h"
 
+static const char *help_msg_e[] = {
+	"Usage:", "e [var[=value]]", "Evaluable vars",
+	"e","?asm.bytes", "show description",
+	"e", "??", "list config vars with description",
+	"e", " a", "get value of var 'a'",
+	"e", " a=b", "set var 'a' the 'b' value",
+	"e var=?", "", "print all valid values of var",
+	"e var=??", "", "print all valid values of var with description",
+	"e-", "", "reset config vars",
+	"e*", "", "dump config vars in r commands",
+	"e!", "a", "invert the boolean value of 'a' var",
+	"ec", " [k] [color]", "set color for given key (prompt, offset, ...)",
+	"ee", "var", "open editor to change the value of var",
+	"ej", "", "list config vars in JSON",
+	"env", " [k[=v]]", "get/set environment variable",
+	"er", " [key]", "set config key as readonly. no way back",
+	"et", " [key]", "show type of given config variable",
+	"ev", " [key]", "list config vars in verbose format",
+	"evj", " [key]", "list config vars in verbose format in JSON",
+	NULL
+};
+
 static char *curtheme = NULL;
 static bool getNext = false;
 
+static void cmd_eval_init(RCore *core) {
+	DEFINE_CMD_DESCRIPTOR (core, e);
+}
+
 static bool load_theme(RCore *core, const char *path) {
+	if (!r_file_exists (path)) {
+		return false;
+	}
 	core->cmdfilter = "ec ";
 	bool res = r_core_cmd_file (core, path);
+	if (res) {
+		r_cons_pal_update_event ();
+	}
 	core->cmdfilter = NULL;
 	return res;
 }
@@ -45,7 +77,37 @@ static bool nextpal_item(RCore *core, int mode, const char *file, int ctr) {
 	return true;
 }
 
+R_API RList *r_core_list_themes(RCore *core) {
+	RList *files = NULL;
+	RListIter *iter;
+	const char *fn;
+	char *home = r_str_home (".config/radare2/cons/");
+
+	RList *list = r_list_new ();
+	getNext = false;
+	if (home) {
+		files = r_sys_dir (home);
+		r_list_foreach (files, iter, fn) {
+			if (*fn && *fn != '.') {
+				r_list_append (list, strdup (fn));
+			}
+		}
+		r_list_free (files);
+		R_FREE (home);
+	}
+	files = r_sys_dir (R2_DATDIR"/radare2/"R2_VERSION"/cons/");
+	r_list_foreach (files, iter, fn) {
+		if (*fn && *fn != '.') {
+			r_list_append (list, strdup (fn));
+		}
+	}
+	r_list_free (files);
+	files = NULL;
+	return list;
+}
+
 static void nextpal(RCore *core, int mode) {
+// TODO: use r_core_list_themes() here instead of rewalking all the time
 	RList *files = NULL;
 	RListIter *iter;
 	const char *fn;
@@ -137,7 +199,9 @@ static int cmd_eval(void *data, const char *input) {
 	RCore *core = (RCore *)data;
 	switch (input[0]) {
 	case 't': // env
-		if (input[1]==' ' && input[2]) {
+		if (input[1] == 'a') {
+			r_cons_printf ("%s\n", (r_num_rand (10) % 2)? "wen": "son");
+		} else if (input[1]==' ' && input[2]) {
 			RConfigNode *node = r_config_node_get (core->config, input+2);
 			if (node) {
 				const char *type = r_config_node_type (node);
@@ -182,6 +246,9 @@ static int cmd_eval(void *data, const char *input) {
 	case 'j': // json
 		r_config_list (core->config, NULL, 'j');
 		break;
+	case 'v': // verbose
+		r_config_list (core->config, input + 1, 'v');
+		break;
 	case 'q': // quiet list of eval keys
 		r_config_list (core->config, NULL, 'q');
 		break;
@@ -206,6 +273,7 @@ static int cmd_eval(void *data, const char *input) {
 			"eco"," dark|white","load white color scheme template",
 			"ecp","","load previous color theme",
 			"ecn","","load next color theme",
+			"ecH","[?]","highlight word or instruction",
 			"ec"," prompt red","change color of prompt",
 			"ec"," prompt red blue","change color and background of prompt",
 			""," ","",
@@ -235,7 +303,9 @@ static int cmd_eval(void *data, const char *input) {
 						if (load_theme (core, input + 3)) {
 							curtheme = r_str_dup (curtheme, input + 3);
 						} else {
-							eprintf ("eco: cannot open colorscheme profile (%s)\n", path);
+							char *absfile = r_file_abspath (input + 3);
+							eprintf ("eco: cannot open colorscheme profile (%s)\n", absfile);
+							free (absfile);
 							failed = true;
 						}
 					}
@@ -280,25 +350,89 @@ static int cmd_eval(void *data, const char *input) {
 		case 'p': // "ecp"
 			nextpal (core, 'p');
 			break;
+		case 'H': { // "ecH"
+			char *color_code = NULL;
+			char *word = NULL;
+			int argc = 0;
+			char** argv = r_str_argv (input + 4, &argc);
+			switch (input[2]) {
+			case '?': {
+				const char *helpmsg[] = {
+					"Usage ecH[iw-?]","","",
+					"ecHi","[color]","highlight current instruction with 'color' background",
+					"ecHw","[word] [color]","highlight 'word ' in current instruction with 'color' background",
+					"ecH-","","remove all highlights on current instruction",
+					NULL
+				};
+				r_core_cmd_help (core, helpmsg);
+				}
+				break;
+			case '-':
+				r_meta_set_string (core->anal, R_META_TYPE_HIGHLIGHT, core->offset, "");
+				return false;
+			case '\0':
+			case 'i': // "ecHi
+				if (argc) {
+					char *dup = r_str_newf ("bgonly %s", argv[0]);
+					color_code = r_cons_pal_parse (dup);
+					R_FREE (dup);
+				}
+				break;
+			case 'w': // "ecHw"
+				if (!argc) {
+					eprintf ("Usage: echw word [color]\n");
+					r_str_argv_free (argv);
+					return true;
+				}
+				word = strdup (argv[0]);
+				if (argc > 1) {
+					char *dup = r_str_newf ("bgonly %s", argv[1]);
+					color_code = r_cons_pal_parse (dup);
+					if (!color_code) {
+						eprintf ("Unknown color %s\n", argv[1]);
+						r_str_argv_free (argv);
+						free (dup);
+						free (word);
+						return true;
+					}
+					R_FREE (dup);
+				}
+				break;
+			default:
+				eprintf ("See ecH?\n");
+				r_str_argv_free (argv);
+				return true;
+			}
+			char *str = r_meta_get_string (core->anal, R_META_TYPE_HIGHLIGHT, core->offset);
+			char *dup = r_str_newf ("%s \"%s%s\"", str?str:"", word?word:"", color_code?color_code:r_cons_pal_get ("highlight"));
+			r_meta_set_string (core->anal, R_META_TYPE_HIGHLIGHT, core->offset, dup);
+			r_str_argv_free (argv);
+			R_FREE (word);
+			R_FREE (dup);
+			break;
+		}
 		default: {
 			char *p = strdup (input + 2);
 			char *q = strchr (p, '=');
-			if (!q) q = strchr (p, ' ');
+			if (!q) {
+				q = strchr (p, ' ');
+			}
 			if (q) {
 				// set
 				*q++ = 0;
 				r_cons_pal_set (p, q);
 			} else {
 				const char *k = r_cons_pal_get (p);
-				if (k)
+				if (k) {
 					eprintf ("(%s)(%sCOLOR"Color_RESET")\n", p, k);
+				}
 			}
 			free (p);
 		}
 		}
 		break;
 	case 'e':
-		if (input[1]==' ') {
+		if (input[1] == ' ') {
 			char *p;
 			const char *val, *input2 = strchr (input+2, ' ');
 			if (input2) input2++; else input2 = input+2;
@@ -308,7 +442,9 @@ static int cmd_eval(void *data, const char *input) {
 				r_str_replace_char (p, '\n', ';');
 				r_config_set (core->config, input2, p);
 			}
-		} else eprintf ("Usage: ee varname\n");
+		} else {
+			eprintf ("Usage: ee varname\n");
+		}
 		break;
 	case '!':
 		input = r_str_chop_ro (input+1);
@@ -319,31 +455,13 @@ static int cmd_eval(void *data, const char *input) {
 		r_core_config_init (core);
 		//eprintf ("BUG: 'e-' command locks the eval hashtable. patches are welcome :)\n");
 		break;
-	case 'v': eprintf ("Invalid command '%s'. Use 'e?'\n", input); break;
 	case '*': r_config_list (core->config, NULL, 1); break;
 	case '?':
 		switch (input[1]) {
 		case '?': r_config_list (core->config, input+2, 2); break;
 		default: r_config_list (core->config, input+1, 2); break;
-		case 0:{
-			const char* help_msg[] = {
-			"Usage:", "e[?] [var[=value]]", "Evaluable vars",
-			"e","?asm.bytes", "show description",
-			"e", "??", "list config vars with description",
-			"e", "", "list config vars",
-			"e-", "", "reset config vars",
-			"e*", "", "dump config vars in r commands",
-			"e!", "a", "invert the boolean value of 'a' var",
-			"ee", "var", "open editor to change the value of var",
-			"er", " [key]", "set config key as readonly. no way back",
-			"ec", " [k] [color]", "set color for given key (prompt, offset, ...)",
-			"et", " [key]", "show type of given config variable",
-			"e", " a", "get value of var 'a'",
-			"e", " a=b", "set var 'a' the 'b' value",
-			"env", " [k[=v]]", "get/set environment variable",
-			NULL};
-			r_core_cmd_help (core, help_msg);
-			}
+		case 0:
+			r_core_cmd_help (core, help_msg_e);
 		}
 		break;
 	case 'r':

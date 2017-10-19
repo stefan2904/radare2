@@ -8,11 +8,27 @@
 #include <btree.h>
 #include <r_regex.h>
 #include <r_list.h> // radare linked list
+#include <r_skiplist.h> // skiplist
 #include <r_flist.h> // radare fixed pointer array iterators
-#include <list.h> // kernel linked list
 #include <r_th.h>
+#if !__WINDOWS__
 #include <dirent.h>
+#include <signal.h>
+#endif
+#ifdef HAVE_LIB_GMP
+#include <gmp.h>
+#endif
+#if HAVE_LIB_SSL
+#include <openssl/bn.h>
+#endif
+#ifdef _MSC_VER
+#include <windows.h>
+int gettimeofday (struct timeval* p, void* tz);
+#endif
 #include <sys/time.h>
+#include "r_util/r_addr_interval.h"
+#include "r_util/r_rbtree.h"
+#include "r_util/r_big.h"
 #include "r_util/r_base64.h"
 #include "r_util/r_base91.h"
 #include "r_util/r_buf.h"
@@ -34,25 +50,24 @@
 #include "r_util/r_queue.h"
 #include "r_util/r_range.h"
 #include "r_util/r_sandbox.h"
+#include "r_util/r_signal.h"
 #include "r_util/r_spaces.h"
 #include "r_util/r_stack.h"
 #include "r_util/r_str.h"
 #include "r_util/r_strbuf.h"
-#include "r_util/r_strht.h"
 #include "r_util/r_strpool.h"
 #include "r_util/r_sys.h"
 #include "r_util/r_tree.h"
 #include "r_util/r_uleb128.h"
 #include "r_util/r_utf8.h"
-#if __UNIX__
-#include <signal.h>
-#endif
-#ifdef HAVE_LIB_GMP
-#include <gmp.h>
-#endif
-#if HAVE_LIB_SSL
-#include <openssl/bn.h>
-#endif
+#include "r_util/r_utf16.h"
+#include "r_util/r_utf32.h"
+#include "r_util/r_id_storage.h"
+#include "r_util/r_asn1.h"
+#include "r_util/r_json.h"
+#include "r_util/r_x509.h"
+#include "r_util/r_pkcs7.h"
+#include "r_util/r_interval.h"
 
 #ifdef __cplusplus
 extern "C" {

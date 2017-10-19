@@ -13,6 +13,9 @@ endif
 
 -include ../../global.mk
 -include ../../../global.mk
+
+-include $(STOP)/qnx/deps.mk
+
 LDFLAGS+=-L$(LTOP)/util -lr_util
 LDFLAGS+=-L$(LTOP)/cons -lr_cons
 LDFLAGS+=-L$(LTOP)/parse -lr_parse
@@ -29,4 +32,4 @@ TARGET_QNX=debug_qnx.${EXT_SO}
 ALL_TARGETS+=${TARGET_QNX}
 
 ${TARGET_QNX}: ${OBJ_QNX}
-	${CC_LIB} $(call libname,debug_qnx) ${OBJ_QNX} ${CFLAGS} ${LDFLAGS}
+	${CC} $(call libname,debug_qnx) ${OBJ_QNX} ${CFLAGS} ${LDFLAGS}

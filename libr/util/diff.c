@@ -1,8 +1,6 @@
-/* radare - LGPL - Copyright 2009-2016 - pancake, nikolai */
+/* radare - LGPL - Copyright 2009-2017 - pancake, nikolai */
 
 #include <r_diff.h>
-
-//R_LIB_VERSION (r_diff);
 
 R_API RDiff *r_diff_new_from(ut64 off_a, ut64 off_b) {
 	RDiff *d = R_NEW0 (RDiff);
@@ -38,32 +36,36 @@ R_API int r_diff_set_delta(RDiff *d, int delta) {
 R_API int r_diff_buffers_static(RDiff *d, const ut8 *a, int la, const ut8 *b, int lb) {
 	int i, len;
 	int hit = 0;
-	la = R_ABS(la);
-	lb = R_ABS(lb);
+	la = R_ABS (la);
+	lb = R_ABS (lb);
 	if (la != lb) {
 	 	len = R_MIN(la, lb);
-		fprintf(stderr,
-			"Buffer truncated to %d bytes (%d not compared)\n",
-			len, R_ABS(lb-la));
-	} else len = la;
-	for(i = 0; i<len; i++) {
-		if (a[i]!=b[i]) {
+		eprintf ("Buffer truncated to %d bytes (%d not compared)\n", len, R_ABS(lb-la));
+	} else {
+		len = la;
+	}
+	for (i = 0; i < len; i++) {
+		if (a[i] != b[i]) {
 			hit++;
 		} else {
-			if (hit>0) {
+			if (hit > 0) {
+				int ra = la - (i - hit);
+				int rb = lb - (i - hit);
 				struct r_diff_op_t o = {
-					.a_off = d->off_a+i-hit, .a_buf = a+i-hit, .a_len = hit,
-					.b_off = d->off_b+i-hit, .b_buf = b+i-hit, .b_len = hit
+					.a_off = d->off_a+i-hit, .a_buf = a+i-hit, .a_len = R_MIN (hit, ra),
+					.b_off = d->off_b+i-hit, .b_buf = b+i-hit, .b_len = R_MIN (hit, rb)
 				};
 				d->callback (d, d->user, &o);
 				hit = 0;
 			}
 		}
 	}
-	if (hit>0) {
+	if (hit > 0) {
+		int ra = la - (i - hit);
+		int rb = lb - (i - hit);
 		struct r_diff_op_t o = {
-			.a_off = d->off_a+i-hit, .a_buf = a+i-hit, .a_len = hit,
-			.b_off = d->off_b+i-hit, .b_buf = b+i-hit, .b_len = hit
+			.a_off = d->off_a+i-hit, .a_buf = a+i-hit, .a_len = R_MIN (hit, ra),
+			.b_off = d->off_b+i-hit, .b_buf = b+i-hit, .b_len = R_MIN (hit, rb)
 		};
 		d->callback (d, d->user, &o);
 		hit = 0;
@@ -72,119 +74,17 @@ R_API int r_diff_buffers_static(RDiff *d, const ut8 *a, int la, const ut8 *b, in
 }
 
 // XXX: temporary files are
-R_API int r_diff_buffers_radiff(RDiff *d, const ut8 *a, int la, const ut8 *b, int lb) {
-	char *ptr, *str, buf[64], oop = 0;
-	int ret, atl, btl, hit;
-	ut8 at[128], bt[128];
-	ut64 ooa, oob;
-	FILE *fd;
-
-	hit = atl = btl = 0;
-	ooa = oob = 0LL;
-	oop = -1;
-
-	r_file_dump (".a", a, la, 0);
-	r_file_dump (".b", b, lb, 0);
-	r_sys_cmd ("radiff -d .a .b | rsc uncolor > .d");
-	fd = fopen (".d", "r");
-	if (!fd) return 0;
-
-	while (!feof (fd)) {
-		ut64 oa, ob; // offset
-		int ba, bb = 0; // byte
-		char op; // operation
-
-		oa = ob = 0LL;
-		if (!fgets (buf, 63, fd))
-			break;
-		if (feof (fd))
-			break;
-		str = buf;
-
-		ptr = strchr (buf, ' ');
-		if (!ptr) continue;
-		*ptr='\0';
-		sscanf (str, "0x%08"PFMT64x"", &oa);
-
-		str = r_str_ichr (ptr+1, ' ');
-		if (*str!='|'&&*str!='>'&&*str!='<') {
-			ptr = strchr (str, ' ');
-			if (!ptr) continue;
-			*ptr='\0';
-			sscanf (str, "%02x", &ba);
-		} else ba = 0;
-
-		str = r_str_ichr (ptr+1, ' ');
-		ptr = strchr (str, ' ');
-		if (!ptr) continue;
-		*ptr='\0';
-		sscanf (str, "%c", &op);
-
-		str = r_str_ichr (ptr+1, ' ');
-		if (str[0]!='0' || str[1]!='x') {
-			ptr = strchr(str, ' ');
-			if (!ptr) continue;
-			*ptr = '\0';
-			sscanf (str, "%02x", &bb);
-		}
-
-		str = ptr+1;
-		ptr = strchr (str, '\n');
-		if (!ptr) continue;
-		*ptr='\0';
-		sscanf (str, "0x%08"PFMT64x"", &ob);
-
-		if (oop == op || oop==-1) {
-			if (hit == 0) {
-				ooa = oa;
-				oob = ob;
-			}
-			at[atl] = ba;
-			bt[btl] = bb;
-			switch (op) {
-			case '|':
-				atl++;
-				btl++;
-				break;
-			case '>':
-				btl++;
-				break;
-			case '<':
-				atl++;
-				break;
-			}
-			hit++;
-		} else {
-			if (hit>0) {
-				struct r_diff_op_t o = {
-					.a_off = ooa, .a_buf = at, .a_len = atl,
-					.b_off = oob, .b_buf = bt, .b_len = btl
-				};
-				ret = d->callback(d, d->user, &o);
-				if (!ret)
-					break;
-				atl = btl = 0;
-				hit = 0;
-			}
-		}
-		oop = op;
+R_API int r_diff_buffers_unified(RDiff *d, const ut8 *a, int la, const ut8 *b, int lb) {
+	if (r_mem_is_printable (a, R_MIN (5, la))) {
+		r_file_dump (".a", a, la, 0);
+		r_file_dump (".b", b, lb, 0);
+	} else {
+		r_file_hexdump (".a", a, la, 0);
+		r_file_hexdump (".b", b, lb, 0);
 	}
-	if (hit > 0) {
-		struct r_diff_op_t o = {
-			.a_off = ooa, .a_buf = at, .a_len = atl,
-			.b_off = oob, .b_buf = bt, .b_len = btl
-		};
-		if (!d->callback (d, d->user, &o)) {
-			fclose (fd);
-			return 0;
-		}
-		atl = btl = 0;
-		hit = 0;
-	}
-	fclose (fd);
-	unlink (".a");
-	unlink (".b");
-	unlink (".d");
+	r_sys_cmd ("diff -ru .a .b");
+	r_file_rm (".a");
+	r_file_rm (".b");
 	return 0;
 }
 
@@ -321,7 +221,7 @@ R_API bool r_diff_buffers_distance_levenstein(RDiff *d, const ut8 *a, ut32 la, c
 		// the value of v1[start] simply increments.
 		if (start > bLen) {
 			break;
-		} 
+		}
 		v1[start] = v0[start] + 1;
 
 		// need to have a bigger number in colMin than we'll ever encounter in the inner loop
@@ -385,89 +285,144 @@ R_API bool r_diff_buffers_distance_levenstein(RDiff *d, const ut8 *a, ut32 la, c
 	}
 	//Clean up output on loop exit (purely aesthetic)
 	if (verbose) {
-		eprintf ("\rProcessing %d of %d (loops=%llu)\n", i, aLen,loops);
+		eprintf ("\rProcessing %d of %d (loops=%"PFMT64d")\n", i, aLen,loops);
 	}
 	if (distance) {
 		// the final distance is the last byte we processed in the inner loop.
 		// v0 is used instead of v1 because we switched the pointers before exiting the outer loop
 		*distance = v0[stop];
-		if (similarity) {
-			double diff = (double) (*distance) / (double) (R_MAX (aLen, bLen));
-			*similarity = (double)1 - diff;
-		}
+	}
+	if (similarity) {
+		double diff = (double) (v0[stop]) / (double) (R_MAX (aLen, bLen));
+		*similarity = (double)1 - diff;
 	}
 	free (v0);
 	free (v1);
 	return true;
 }
 
-R_API bool r_diff_buffers_distance_original(RDiff *d, const ut8 *a, ut32 la, const ut8 *b, ut32 lb, ut32 *distance, double *similarity) {
-	int i, j, tmin, **m;
-	ut64 totalsz = 0;
-
-	if (!a || !b || la < 1 || lb < 1)
-		return false;
-
-	if (la == lb && !memcmp (a, b, la)) {
-		if (distance != NULL)
-			*distance = 0;
-		if (similarity != NULL)
-			*similarity = 1.0;
-		return true;
-	}
-	totalsz = sizeof(int*) * (lb+1);
-	for(i = 0; i <= la; i++) {
-		totalsz += ((lb+1) * sizeof(int));
-	}
-	if (totalsz >= 1024 * 1024 * 1024) { // 1 GB of ram
-		char *szstr = r_num_units (NULL, totalsz);
-		eprintf ("Too much memory required (%s) to run distance diff, Use -c.\n", szstr);
-		free (szstr);
+// Eugene W. Myers' O(ND) diff algorithm
+// Returns edit distance with costs: insertion=1, deletion=1, no substitution
+R_API bool r_diff_buffers_distance_myers(RDiff *diff, const ut8 *a, ut32 la, const ut8 *b, ut32 lb, ut32 *distance, double *similarity) {
+	const bool verbose = diff ? diff->verbose: false;
+	if (!a || !b) {
 		return false;
 	}
-	if ((m = malloc ((la+1) * sizeof(int*))) == NULL)
+	const ut32 length = la + lb;
+	const ut8 *ea = a + la, *eb = b + lb;
+	// Strip prefix
+	for (; a < ea && b < eb && *a == *b; a++, b++) {}
+	// Strip suffix
+	for (; a < ea && b < eb && ea[-1] == eb[-1]; ea--, eb--) {}
+	la = ea - a;
+	lb = eb - b;
+	ut32 *v0, *v;
+	st64 m = (st64)la + lb, di = 0, low, high, i, x, y;
+	if (m + 2 > SIZE_MAX / sizeof (st64) || !(v0 = malloc ((m + 2) * sizeof (ut32)))) {
 		return false;
-	for(i = 0; i <= la; i++) {
-		if ((m[i] = malloc ((lb+1) * sizeof(int))) == NULL) {
-			eprintf ("Allocation failed\n");
-			while (i--)
-				free (m[i]);
-			free (m);
-			return false;
+	}
+	v = v0 + lb;
+	v[1] = 0;
+	for (di = 0; di <= m; di++) {
+		low = -di + 2 * R_MAX (0, di - (st64)lb);
+		high = di - 2 * R_MAX (0, di - (st64)la);
+		for (i = low; i <= high; i += 2) {
+			x = i == -di || (i != di && v[i-1] < v[i+1]) ? v[i+1] : v[i-1] + 1;
+			y = x - i;
+			while (x < la && y < lb && a[x] == b[y]) {
+				x++;
+				y++;
+			}
+			v[i] = x;
+			if (x == la && y == lb) {
+				goto out;
+			}
+		}
+		if (verbose && di % 10000 == 0) {
+			eprintf ("\rProcessing dist %" PFMT64d " of max %" PFMT64d "\r", di, m);
 		}
 	}
 
-	for (i = 0; i <= la; i++)
-		m[i][0] = i;
-	for (j = 0; j <= lb; j++)
-		m[0][j] = j;
-
-	for (i = 1; i <= la; i++) {
-		for (j = 1; j <= lb; j++) {
-			int cost = (a[i-1] != b[j-1])? 1: 0;
-			tmin = R_MIN (m[i-1][j] + 1, m[i][j-1] + 1);
-			m[i][j] = R_MIN (tmin, m[i-1][j-1] + cost);
-		}
+out:
+	if (verbose) {
+		eprintf ("\n");
 	}
-
+	free (v0);
+	//Clean up output on loop exit (purely aesthetic)
 	if (distance) {
-		*distance = m[la][lb];
+		*distance = di;
 	}
 	if (similarity) {
-		*similarity = (double)1 - (double)(m[la][lb])/(double)(R_MAX(la, lb));
+		*similarity = length ? 1.0 - (double)di / length : 1.0;
+	}
+	return true;
+}
+
+R_API bool r_diff_buffers_distance_original(RDiff *diff, const ut8 *a, ut32 la, const ut8 *b, ut32 lb, ut32 *distance, double *similarity) {
+	if (!a || !b)
+		return false;
+
+	const bool verbose = diff ? diff->verbose : false;
+	const ut32 length = R_MAX (la, lb);
+	const ut8 *ea = a + la, *eb = b + lb, *t;
+	ut32 *d, i, j;
+	// Strip prefix
+	for (; a < ea && b < eb && *a == *b; a++, b++) {}
+	// Strip suffix
+	for (; a < ea && b < eb && ea[-1] == eb[-1]; ea--, eb--) {}
+	la = ea - a;
+	lb = eb - b;
+	if (la < lb) {
+		i = la;
+		la = lb;
+		lb = i;
+		t = a;
+		a = b;
+		b = t;
 	}
 
-	for(i = 0; i <= la; i++) {
-		free (m[i]);
+	if (sizeof (ut32) > SIZE_MAX / (lb + 1) || !(d = malloc ((lb + 1) * sizeof (ut32)))) {
+		return false;
 	}
-	free (m);
+	for (i = 0; i <= lb; i++) {
+		d[i] = i;
+	}
+	for (i = 0; i < la; i++) {
+		ut32 ul = d[0];
+		d[0] = i + 1;
+		for (j = 0; j < lb; j++) {
+			ut32 u = d[j + 1];
+			d[j + 1] = a[i] == b[j] ? ul : R_MIN (ul, R_MIN (d[j], u)) + 1;
+			ul = u;
+		}
+		if (verbose && i % 10000 == 0) {
+			eprintf ("\rProcessing %" PFMT32u " of %" PFMT32u "\r", i, la);
+		}
+	}
 
+	if (verbose) {
+		eprintf ("\n");
+	}
+	if (distance) {
+		*distance = d[lb];
+	}
+	if (similarity) {
+		*similarity = length ? 1.0 - (double)d[lb] / length : 1.0;
+	}
+	free (d);
 	return true;
 }
 
 R_API bool r_diff_buffers_distance(RDiff *d, const ut8 *a, ut32 la, const ut8 *b, ut32 lb, ut32 *distance, double *similarity) {
-	if (d && d->levenstein) {
-		return r_diff_buffers_distance_levenstein (d, a, la, b, lb, distance, similarity);
+	if (d) {
+		switch (d->type) {
+		case 'm':
+			return r_diff_buffers_distance_myers (d, a, la, b, lb, distance, similarity);
+		case 'l':
+			return r_diff_buffers_distance_levenstein (d, a, la, b, lb, distance, similarity);
+		default:
+			break;
+		}
 	}
 	return r_diff_buffers_distance_original (d, a, la, b, lb, distance, similarity);
 }

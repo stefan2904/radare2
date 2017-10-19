@@ -41,6 +41,10 @@ struct user_regs_struct_x86_32 {
 #if __i386__ || __x86_64__
 #define R_DEBUG_REG_T struct user_regs_struct
 #elif __arm64__ || __aarch64__
+#include <asm/ptrace.h>
+#ifndef NT_PRSTATUS
+#define NT_PRSTATUS 1
+#endif
 #define R_DEBUG_REG_T struct user_pt_regs
 #elif __arm__
 #define R_DEBUG_REG_T struct user_regs
@@ -76,15 +80,25 @@ typedef ut64 mips64_regs_t [274];
 #endif
 #endif
 
-
 //API
+bool linux_set_options (RDebug *dbg, int pid);
 int linux_step (RDebug *dbg);
 RDebugReasonType linux_ptrace_event (RDebug *dbg, int pid, int status);
 int linux_attach (RDebug *dbg, int pid);
 RDebugInfo *linux_info (RDebug *dbg, const char *arg);
 RList *linux_thread_list (int pid, RList *list);
+RDebugPid *fill_pid_info (const char *info, const char *path, int tid);
 int linux_reg_read (RDebug *dbg, int type, ut8 *buf, int size);
 int linux_reg_write (RDebug *dbg, int type, const ut8 *buf, int size);
 RList *linux_desc_list (int pid);
 int linux_handle_signals (RDebug *dbg);
+int linux_dbg_wait (RDebug *dbg, int pid);
 const char *linux_reg_profile (RDebug *dbg);
+int match_pid (const void *pid_o, const void *th_o);
+static void linux_detach_all (RDebug *dbg);
+static char *read_link (int pid, const char *file);
+static int linux_attach_single_pid (RDebug *dbg, int ptid);
+static void linux_attach_all (RDebug *dbg);
+static void linux_remove_thread (RDebug *dbg, int pid);
+static void linux_add_and_attach_new_thread (RDebug *dbg, int tid);
+static int linux_stop_process(int pid);

@@ -4,23 +4,16 @@
 #include <r_lib.h>
 #include "nes/nes_specs.h"
 
-static int check(RBinFile *arch);
-static int check_bytes(const ut8 *buf, ut64 length);
+static bool check_bytes(const ut8 *buf, ut64 length) {
+	if (!buf || length < 4) {
+		return false;
+	}
+	return (!memcmp (buf, INES_MAGIC, 4));
+}
 
 static void * load_bytes(RBinFile *arch, const ut8 *buf, ut64 sz, ut64 loadaddr, Sdb *sdb){
 	check_bytes (buf, sz);
 	return R_NOTNULL;
-}
-
-static int check(RBinFile *arch) {
-	const ut8 *bytes = arch ? r_buf_buffer (arch->buf) : NULL;
-	ut64 sz = arch ? r_buf_size (arch->buf): 0;
-	return check_bytes (bytes, sz);
-}
-
-static int check_bytes(const ut8 *buf, ut64 length) {
-	if (!buf || length < 4) return false;
-	return (!memcmp (buf, INES_MAGIC, 4));
 }
 
 static RBinInfo* info(RBinFile *arch) {
@@ -32,8 +25,9 @@ static RBinInfo* info(RBinFile *arch) {
 		eprintf ("Truncated Header\n");
 		return NULL;
 	}
-	if (!(ret = R_NEW0 (RBinInfo)))
+	if (!(ret = R_NEW0 (RBinInfo))) {
 		return NULL;
+	}
 	ret->file = strdup (arch->file);
 	ret->type = strdup ("ROM");
 	ret->machine = strdup ("Nintendo NES");
@@ -44,33 +38,43 @@ static RBinInfo* info(RBinFile *arch) {
 	return ret;
 }
 
+static void addsym(RList *ret, const char *name, ut64 addr, ut32 size) {
+	RBinSymbol *ptr = R_NEW0 (RBinSymbol);
+	if (!ptr) return;
+	ptr->name = strdup (name? name: "");
+	ptr->paddr = ptr->vaddr = addr;
+	ptr->size = size;
+	ptr->ordinal = 0;
+	r_list_append (ret, ptr);
+}
+
 static RList* symbols(RBinFile *arch) {
 	RList *ret = NULL;
-	RBinSymbol *ptr[3];
-	if (!(ret = r_list_new()))
+	if (!(ret = r_list_newf (free))) {
 		return NULL;
-	ret->free = free;
-	if (!(ptr[0] = R_NEW0 (RBinSymbol)))
-		return ret;
-	ptr[0]->name = strdup ("NMI_VECTOR_START_ADDRESS");
-	ptr[0]->vaddr = NMI_VECTOR_START_ADDRESS;
-	ptr[0]->size = 2;
-	ptr[0]->ordinal = 0;
-	r_list_append (ret, ptr[0]);
-	if (!(ptr[1] = R_NEW0 (RBinSymbol)))
-		return ret;
-	ptr[1]->name = strdup ("RESET_VECTOR_START_ADDRESS");
-	ptr[1]->vaddr = RESET_VECTOR_START_ADDRESS;
-	ptr[1]->size = 2;
-	ptr[1]->ordinal = 1;
-	r_list_append (ret, ptr[1]);
-	if (!(ptr[2] = R_NEW0 (RBinSymbol)))
-		return ret;
-	ptr[2]->name = strdup ("IRQ_VECTOR_START_ADDRESS");
-	ptr[2]->vaddr = IRQ_VECTOR_START_ADDRESS;
-	ptr[2]->size = 2;
-	ptr[2]->ordinal = 2;
-	r_list_append (ret, ptr[2]);
+	}
+	addsym (ret, "NMI_VECTOR_START_ADDRESS", NMI_VECTOR_START_ADDRESS,2);
+	addsym (ret, "RESET_VECTOR_START_ADDRESS", RESET_VECTOR_START_ADDRESS,2);
+	addsym (ret, "IRQ_VECTOR_START_ADDRESS", IRQ_VECTOR_START_ADDRESS,2);
+	addsym (ret, "PPU_CTRL_REG1", PPU_CTRL_REG1,0x1);
+	addsym (ret, "PPU_CTRL_REG2", PPU_CTRL_REG2,0x1);
+	addsym (ret, "PPU_STATUS", PPU_STATUS,0x1);
+	addsym (ret, "PPU_SPR_ADDR", PPU_SPR_ADDR,0x1);
+	addsym (ret, "PPU_SPR_DATA", PPU_SPR_DATA,0x1);
+	addsym (ret, "PPU_SCROLL_REG", PPU_SCROLL_REG,0x1);
+	addsym (ret, "PPU_ADDRESS", PPU_ADDRESS,0x1);
+	addsym (ret, "PPU_DATA", PPU_DATA,0x1);
+	addsym (ret, "SND_REGISTER", SND_REGISTER,0x15);
+	addsym (ret, "SND_SQUARE1_REG", SND_SQUARE1_REG,0x4);
+	addsym (ret, "SND_SQUARE2_REG", SND_SQUARE2_REG,0x4);
+	addsym (ret, "SND_TRIANGLE_REG", SND_TRIANGLE_REG,0x4);
+	addsym (ret, "SND_NOISE_REG", SND_NOISE_REG,0x2);
+	addsym (ret, "SND_DELTA_REG", SND_DELTA_REG,0x4);
+	addsym (ret, "SND_MASTERCTRL_REG", SND_MASTERCTRL_REG,0x5);
+	addsym (ret, "SPR_DMA", SPR_DMA,0x2);
+	addsym (ret, "JOYPAD_PORT", JOYPAD_PORT,0x1);
+	addsym (ret, "JOYPAD_PORT1", JOYPAD_PORT1,0x1);
+	addsym (ret, "JOYPAD_PORT2", JOYPAD_PORT2,0x1);
 	return ret;
 }
 
@@ -84,10 +88,12 @@ static RList* sections(RBinFile *arch) {
 		eprintf ("Truncated Header\n");
 		return NULL;
 	}
-	if (!(ret = r_list_new ()))
+	if (!(ret = r_list_new ())) {
 		return NULL;
-	if (!(ptr = R_NEW0 (RBinSection)))
+	}
+	if (!(ptr = R_NEW0 (RBinSection))) {
 		return ret;
+	}
 	strcpy (ptr->name, "ROM");
 	ptr->paddr = INES_HDR_SIZE;
 	ptr->size = ihdr.prg_page_count_16k * PRG_PAGE_SIZE;
@@ -102,8 +108,9 @@ static RList* sections(RBinFile *arch) {
 static RList *mem (RBinFile *arch) {
 	RList *ret;
 	RBinMem *m, *n;
-	if (!(ret = r_list_new()))
+	if (!(ret = r_list_new())) {
 		return NULL;
+	}
 	ret->free = free;
 	if (!(m = R_NEW0 (RBinMem))) {
 		r_list_free (ret);
@@ -114,8 +121,9 @@ static RList *mem (RBinFile *arch) {
 	m->size = RAM_SIZE;
 	m->perms = r_str_rwx ("rwx");
 	r_list_append (ret, m);
-	if (!(n = R_NEW0 (RBinMem)))
+	if (!(n = R_NEW0 (RBinMem))) {
 		return ret;
+	}
 	m->mirrors = r_list_new();
 	n->name = strdup ("RAM_MIRROR_2");
 	n->addr = RAM_MIRROR_2_ADDRESS;
@@ -141,7 +149,7 @@ static RList *mem (RBinFile *arch) {
 	m->size = PPU_REG_SIZE;
 	m->perms = r_str_rwx ("rwx");
 	r_list_append (ret, m);
-	m->mirrors = r_list_new();
+	m->mirrors = r_list_new ();
 	int i;
 	for (i = 1; i < 1024; i++) {
 		if (!(n = R_NEW0 (RBinMem))) {
@@ -173,7 +181,6 @@ static RList *mem (RBinFile *arch) {
 	m->size = SRAM_SIZE;
 	m->perms = r_str_rwx ("rwx");
 	r_list_append (ret, m);
-
 	return ret;
 }
 
@@ -192,12 +199,17 @@ static RList* entries(RBinFile *arch) { //Should be 3 offsets pointed by NMI, RE
 	return ret;
 }
 
+static ut64 baddr(RBinFile *arch) {
+	// having this we make r2 -B work, otherwise it doesnt works :??
+	return 0;
+}
+
 RBinPlugin r_bin_plugin_nes = {
 	.name = "nes",
 	.desc = "NES",
 	.license = "LGPL3",
 	.load_bytes = &load_bytes,
-	.check = &check,
+	.baddr = &baddr,
 	.check_bytes = &check_bytes,
 	.entries = &entries,
 	.sections = sections,

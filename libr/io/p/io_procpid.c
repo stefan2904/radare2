@@ -33,8 +33,8 @@ static int debug_os_read_at(int fdn, void *buf, int sz, ut64 addr) {
 	return read (fdn, buf, sz);
 }
 
-static int __read(struct r_io_t *io, RIODesc *fd, ut8 *buf, int len) {
-	memset (buf, '\xff', len); // TODO: only memset the non-readed bytes
+static int __read(RIO *io, RIODesc *fd, ut8 *buf, int len) {
+	memset (buf, 0xff, len); // TODO: only memset the non-readed bytes
 	return debug_os_read_at (RIOPROCPID_FD (fd), buf, len, io->off);
 }
 
@@ -45,15 +45,15 @@ static int procpid_write_at(int fd, const ut8 *buf, int sz, ut64 addr) {
 	return write (fd, buf, sz);
 }
 
-static int __write(struct r_io_t *io, RIODesc *fd, const ut8 *buf, int len) {
+static int __write(RIO *io, RIODesc *fd, const ut8 *buf, int len) {
 	return procpid_write_at (RIOPROCPID_FD (fd), buf, len, io->off);
 }
 
-static bool __plugin_open(struct r_io_t *io, const char *file, bool many) {
+static bool __plugin_open(RIO *io, const char *file, bool many) {
 	return (!strncmp (file, "procpid://", 10));
 }
 
-static RIODesc *__open(struct r_io_t *io, const char *file, int rw, int mode) {
+static RIODesc *__open(RIO *io, const char *file, int rw, int mode) {
 	char procpidpath[64];
 	int fd, ret = -1;
 	if (__plugin_open (io, file, 0)) {
@@ -71,7 +71,7 @@ static RIODesc *__open(struct r_io_t *io, const char *file, int rw, int mode) {
 					eprintf ("ERRNO: %d (EINVAL)\n", errno);
 					break;
 				}
-			} else if (__waitpid(pid)) {
+			} else if (__waitpid (pid)) {
 				ret = pid;
 			} else {
 				eprintf ("Error in waitpid\n");
@@ -79,7 +79,7 @@ static RIODesc *__open(struct r_io_t *io, const char *file, int rw, int mode) {
 		} else {
 			ret = pid;
 		}
-		fd = ret; //TODO: use r_io_fd api
+		fd = ret; // TODO: use r_io_fd api
 		snprintf (procpidpath, sizeof (procpidpath), "/proc/%d/mem", pid);
 		fd = r_sandbox_open (procpidpath, O_RDWR, 0);
 		if (fd != -1) {
@@ -90,7 +90,9 @@ static RIODesc *__open(struct r_io_t *io, const char *file, int rw, int mode) {
 			}
 			riop->pid = pid;
 			riop->fd = fd;
-			return r_io_desc_new (&r_io_plugin_procpid, -1, file, true, 0, riop);
+			RIODesc *d = r_io_desc_new (io, &r_io_plugin_procpid, file, true, 0, riop);
+			d->name = r_sys_pid_to_path (riop->pid);
+			return d;
 		}
 		/* kill children */
 		eprintf ("Cannot open /proc/%d/mem of already attached process\n", pid);
@@ -99,7 +101,7 @@ static RIODesc *__open(struct r_io_t *io, const char *file, int rw, int mode) {
 	return NULL;
 }
 
-static ut64 __lseek(struct r_io_t *io, RIODesc *fd, ut64 offset, int whence) {
+static ut64 __lseek(RIO *io, RIODesc *fd, ut64 offset, int whence) {
 	return offset;
 }
 
@@ -110,7 +112,7 @@ static int __close(RIODesc *fd) {
 	return ret;
 }
 
-static int __system(struct r_io_t *io, RIODesc *fd, const char *cmd) {
+static int __system(RIO *io, RIODesc *fd, const char *cmd) {
 	RIOProcpid *iop = (RIOProcpid*)fd->data;
 	if (!strncmp (cmd, "pid", 3)) {
 		int pid = atoi (cmd + 3);
@@ -119,25 +121,22 @@ static int __system(struct r_io_t *io, RIODesc *fd, const char *cmd) {
 		}
 		io->cb_printf ("%d\n", iop->pid);
 		return 0;
-	} else eprintf ("Try: '=!pid'\n");
-	return true;
-}
-
-static int __init(struct r_io_t *io) {
+	} else {
+		eprintf ("Try: '=!pid'\n");
+	}
 	return true;
 }
 
 RIOPlugin r_io_plugin_procpid = {
 	.name = "procpid",
-        .desc = "/proc/pid/mem io",
+	.desc = "/proc/pid/mem io",
 	.license = "LGPL3",
-        .open = __open,
-        .close = __close,
+	.open = __open,
+	.close = __close,
 	.read = __read,
-        .check = __plugin_open,
+	.check = __plugin_open,
 	.lseek = __lseek,
 	.system = __system,
-	.init = __init,
 	.write = __write,
 };
 

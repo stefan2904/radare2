@@ -79,7 +79,16 @@ static int __read(RIO *io, RIODesc *fd, ut8 *buf, int count) {
 		arr += 2;
 		for (num[0] = numi = bufi = 0; bufi < count && *arr; arr++) {
 			switch (*arr) {
-			case '0'...'9':
+			case '0':
+			case '1':
+			case '2':
+			case '3':
+			case '4':
+			case '5':
+			case '6':
+			case '7':
+			case '8':
+			case '9':
 				num[numi++] = *arr;
 				num[numi] = 0;
 				break;
@@ -111,7 +120,6 @@ static int __close(RIODesc *fd) {
 		return -1;
 	r2p_free (fd->data);
 	fd->data = NULL;
-	fd->state = R_IO_DESC_TYPE_CLOSED;
 	return 0;
 }
 
@@ -133,8 +141,8 @@ static RIODesc *__open(RIO *io, const char *pathname, int rw, int mode) {
 	if (__check (io, pathname, 0)) {
 		r2p = r2p_open (pathname + 9);
 	}
-	return r2p? r_io_desc_new (&r_io_plugin_r2pipe,
-		r2p->child, pathname, rw, mode, r2p): NULL;
+	return r2p? r_io_desc_new (io, &r_io_plugin_r2pipe,
+		pathname, rw, mode, r2p): NULL;
 }
 
 static int __system(RIO *io, RIODesc *fd, const char *msg) {

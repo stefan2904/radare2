@@ -6,7 +6,6 @@
 #include <unistd.h>
 //#include <err.h>
 #include <string.h>
-//#include <assert.h>
 #define assert(x) if (!(x)) { eprintf("assert ##x##\n"); return; }
 #include <stdarg.h>
 #include <stdint.h>
@@ -42,15 +41,16 @@ static void decode_unknown(struct state *s, struct directive *d) {
 	printf("Opcode 0x%x reg %d mode %d operand 0x%x",
 	       in->in_opcode, in->in_reg, in->in_mode, in->in_operand);
 #endif
-	sprintf(d->d_asm, "DC 0x%4x", i2u16(&d->d_inst));
+	sprintf (d->d_asm, "DC 0x%4x", i2u16(&d->d_inst));
 }
 
 static int decode_fixed(struct state *s, struct directive *d) {
-	*d->d_asm='\0';
+	*d->d_asm = '\0';
 	switch (i2u16 (&d->d_inst)) {
 	case INST_NOP:
-		if (s->s_prefix)
+		if (s->s_prefix) {
 			return 0;
+		}
 		s->s_nop++;
 		strcpy(d->d_asm, "nop");
 		break;
@@ -368,17 +368,25 @@ static int decode_known(struct state *s, struct directive *d) {
 	sprintf (d->d_asm, "%s ", op);
 	if (reg) {
 		char *r = regn;
-		if (!r) r = regname(in->in_reg);
+		if (!r) {
+			r = regname (in->in_reg);
+		}
 		if (r && !rti) {
-			strcat (d->d_asm, r);
-			strcat (d->d_asm, ", ");
+			if ((strlen (r) + 4 + strlen (d->d_asm)) < sizeof (d->d_asm)) {
+				strcat (d->d_asm, r);
+				strcat (d->d_asm, ", ");
+			}
 		}
 	}
 	if (ptr) {
-		strcat(d->d_asm, "@");
+		strcat (d->d_asm, "@");
 		rel = 0;
-	} else if (imm) strcat(d->d_asm, "#");
-	if (idx && ptr) strcat(d->d_asm, "(");
+	} else if (imm) {
+		strcat (d->d_asm, "#");
+	}
+	if (idx && ptr) {
+		strcat (d->d_asm, "(");
+	}
 
 	d->d_prefix = s->s_prefix;
 //	d->d_operand = get_operand(s, d);

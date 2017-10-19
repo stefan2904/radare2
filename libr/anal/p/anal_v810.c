@@ -43,12 +43,15 @@ static int v810_op(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *buf, int len)
 	r_strbuf_set (&op->esil, "");
 
 	ret = op->size = v810_decode_command (buf, len, &cmd);
-	if (ret <= 0) return ret;
+	if (ret <= 0) {
+		return ret;
+	}
 
 	word1 = r_read_ble16 (buf, anal->big_endian);
 
-	if (ret == 4)
+	if (ret == 4) {
 		word2 = r_read_ble16 (buf+2, anal->big_endian);
+	}
 
 	op->addr = addr;
 	op->jump = op->fail = -1;
@@ -426,7 +429,7 @@ static int set_reg_profile(RAnal *anal) {
 	return r_reg_set_profile_string (anal->reg, p);
 }
 
-struct r_anal_plugin_t r_anal_plugin_v810 = {
+RAnalPlugin r_anal_plugin_v810 = {
 	.name = "v810",
 	.desc = "V810 code analysis plugin",
 	.license = "LGPL3",

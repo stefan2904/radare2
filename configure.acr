@@ -1,5 +1,5 @@
 PKGNAME radare2
-VERSION 0.10.6
+VERSION 2.1.0-git
 CONTACT pancake ; pancake@nopcode.org
 
 LANG_C!
@@ -82,8 +82,6 @@ IFNULL SSL_LDFLAGS {
 
 ARG_WITH USE_RPATH rpath use rpath to build ;
 
-CHKLIB lua5.1
-
 (( rules for the compiler ))
 ARG_WITH USERCC=gcc compiler Define compiler to use (see mk/) ;
 ARG_WITH USEROSTYPE=auto ostype Choose OS type ( gnulinux windows darwin haiku ) ;
@@ -106,6 +104,9 @@ IFEQ USEROSTYPE auto ; {
 		HAVE_LIB_DL = 1 ;
 		DL_LIBS = -ldl ;
 	}{
+	IFEQ HOST_OS sunos ; {
+		USEROSTYPE = solaris ;
+	}{
 	IFEQ HOST_OS gnu/kfreebsd ; {
 		USEROSTYPE = bsd ;
 	}{
@@ -120,13 +121,14 @@ IFEQ USEROSTYPE auto ; {
 	}{
 	IFEQ HOST_OS darwin ; {
 		USEROSTYPE = darwin ;
-	} } } } } } } } }
+	} } } } } } } } } }
 }
 
 ARG_WITHOUT WITHPIC pic do not build libr as a program independent location ;
 ARG_WITH WITHNONPIC nonpic build the library archives .a ;
 (( this hack is required for openbsd ports ))
 ARG_WITH LIBVERSION=xxx libversion specify different libversion ;
+ARG_WITHOUT HAVE_JEMALLOC jemalloc build without jemalloc ;
 
 IFEQ LIBVERSION xxx ; {
 	LIBVERSION = $VERSION ;
@@ -152,7 +154,7 @@ SUBDIRS ./config-user.mk
 	pkgcfg/r_debug.pc
 	pkgcfg/r_reg.pc
 	pkgcfg/r_config.pc
-	pkgcfg/r_flags.pc
+	pkgcfg/r_flag.pc
 	pkgcfg/r_syscall.pc
 	pkgcfg/r_util.pc
 	pkgcfg/r_search.pc

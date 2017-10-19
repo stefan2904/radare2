@@ -15,8 +15,9 @@
 
 static int disassemble(RAsm *a, RAsmOp *op, const ut8 *buf, int len) {
 	int ret = op->size = avrdis (op->buf_asm, a->pc, buf, len);
-	if (op->buf_asm[0] == '.')
+	if (op->buf_asm[0] == '.') {
 		op->buf_asm[0] = 0;
+	}
 	return ret;
 }
 
@@ -180,7 +181,7 @@ static int parse_registerpair(const char *operand) {
 		return -1;
 	}
 	
-	second = strtok(NULL, ":");
+	second = strtok (NULL, ":");
 
 	/* the next code handles two possible different representation of pair
 	   by pair rx+1:rx
@@ -207,8 +208,9 @@ static int parse_registerpair(const char *operand) {
 		// the pair by even register (first)
 		if (first[0] == 'r') {
 			snum = atoi(first+1);
-			if (snum >= 0 && snum <= 30)
+			if (snum >= 0 && snum <= 30) {
 				res = snum / 2;
+			}
 		} else if (first[0] >= 'x' && first[0] <= 'z') {
 			res = (2 - ('z' - first[0])) + 12;
 		}
@@ -417,17 +419,18 @@ RAsmPlugin r_asm_plugin_avr = {
 	.desc = "AVR Atmel",
 	.disassemble = &disassemble,
 	.assemble = &assemble,
-	.cpus = "ATmega168,"
+	.cpus = 
+		"ATmega8,"
+		"ATmega168,"
 		"ATmega328p,"
 		"ATmega32u4,"
-	        "ATmega1280,"
-	        "ATmega2560,"
-		"ATmega48,"
-		"ATmega8"
+		"ATmega1280,"
+		"ATmega2560,"
+		"ATmega48"
 };
 
 #ifndef CORELIB
-struct r_lib_struct_t radare_plugin = {
+RLibStruct radare_plugin = {
 	.type = R_LIB_TYPE_ASM,
 	.data = &r_asm_plugin_avr,
 	.version = R2_VERSION

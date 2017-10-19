@@ -34,8 +34,6 @@ static inline ut64 xtensa_imm18s (ut64 addr, const ut8 *buf) {
 
 static inline ut64 xtensa_imm6s (ut64 addr, const ut8 *buf) {
 	ut8 imm6 = (buf[1] >> 4) | (buf[0] & 0x30);
-	if (imm6 & 0x20)
-		return (addr + 4 + imm6 - 0x40);
 	return (addr + 4 + imm6);
 }
 
@@ -643,6 +641,7 @@ static void xtensa_check_stack_op(xtensa_isa isa, xtensa_opcode opcode, xtensa_f
 	// a1 = stack
 	if (dst == 1 && src == 1) {
 		op->val = imm;
+		op->stackptr = -imm;
 		op->stackop = R_ANAL_STACK_INC;
 	}
 }
@@ -1758,7 +1757,7 @@ static void analop_esil (RAnal *a, RAnalOp *op, ut64 addr, ut8 *buffer, size_t l
 	xtensa_opcode opcode;
 	xtensa_isa isa = xtensa_default_isa;
 	xtensa_format format;
-	ut32 nslots;
+	int nslots;
 
 	static xtensa_insnbuf insn_buffer = NULL;
 	static xtensa_insnbuf slot_buffer = NULL;
@@ -1781,6 +1780,9 @@ static void analop_esil (RAnal *a, RAnalOp *op, ut64 addr, ut8 *buffer, size_t l
 	}
 
 	nslots = xtensa_format_num_slots (isa, format);
+	if (nslots < 1) {
+		return;
+	}
 
 	for (i = 0; i < nslots; i++) {
 		xtensa_format_get_slot (isa, format, i, insn_buffer, slot_buffer);
@@ -1994,7 +1996,7 @@ static char *get_reg_profile(RAnal *anal) {
 	);
 }
 
-struct r_anal_plugin_t r_anal_plugin_xtensa = {
+RAnalPlugin r_anal_plugin_xtensa = {
 	.name = "xtensa",
 	.desc = "Xtensa disassembler",
 	.license = "LGPL3",

@@ -28,7 +28,7 @@ static int readline_callback(void *_a, const char *str) {
 			"  this assembler supports various directives like .hex ...\n");
 	} else {
 		r_asm_code_free (a->acode);
-		r_asm_set_pc (a->core->assembler, a->core->offset);
+		r_asm_set_pc (a->core->assembler, a->off);
 		a->acode = r_asm_massemble (a->core->assembler, str);
 		r_cons_printf ("%d> %s\n", a->acode? a->acode->len: 0, str);
 		if (a->acode && a->acode->len) {
@@ -41,7 +41,17 @@ static int readline_callback(void *_a, const char *str) {
 			strcpy (a->codebuf, a->blockbuf);
 			memcpy (a->codebuf, a->acode->buf_hex, xlen);
 		}
-		r_core_cmdf (a->core, "pd 7@x:%s @0x%"PFMT64x, a->codebuf, a->off);
+		{
+			int rows = 0;
+			int cols = r_cons_get_size (&rows);
+			char *cmd = r_str_newf ("pd %d @x:%s @0x%"PFMT64x, rows - 10, a->codebuf, a->off);
+			char *res = r_core_cmd_str (a->core, cmd);
+			char *msg = r_str_ansi_crop (res, 0,0, cols - 2, rows - 5);
+			r_cons_printf ("%s\n", msg);
+			free (msg);
+			free (res);
+			free (cmd);
+		}
 	}
 	r_cons_flush ();
 	return 1;

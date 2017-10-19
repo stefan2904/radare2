@@ -1,12 +1,14 @@
 include ../config.mk
 
 NAME=r_parse
-DEPS=r_flags r_util r_syscall r_reg
+DEPS=r_flag r_util r_syscall r_reg
 # indirect dependencies
 DEPS+=r_cons
 
 LINK+=$(STOP)/tcc/libr_tcc.a
 CFLAGS+=-I$(STOP)/tcc/
+
+include $(SHLR)/zip/deps.mk
 
 foo:
 	@for TARGET in pre libr_parse.${EXT_SO} \

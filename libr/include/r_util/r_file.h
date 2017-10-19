@@ -1,5 +1,10 @@
 #ifndef R_FILE_H
 #define R_FILE_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <r_util/r_mem.h>
 
 R_API int r_file_is_abspath(const char *file);
@@ -28,6 +33,7 @@ R_API char *r_file_slurp_random_line(const char *file);
 R_API char *r_file_slurp_random_line_count(const char *file, int *linecount);
 R_API ut8 *r_file_slurp_hexpairs(const char *str, int *usz);
 R_API bool r_file_dump(const char *file, const ut8 *buf, int len, int append);
+R_API bool r_file_hexdump(const char *file, const ut8 *buf, int len, int append);
 R_API bool r_file_rm(const char *file);
 R_API bool r_file_exists(const char *str);
 R_API bool r_file_fexists(const char *fmt, ...);
@@ -35,5 +41,10 @@ R_API char *r_file_slurp_line(const char *file, int line, int context);
 R_API int r_file_mkstemp(const char *prefix, char **oname);
 R_API char *r_file_tmpdir(void);
 R_API char *r_file_readlink(const char *path);
+R_API bool r_file_copy (const char *src, const char *dst);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif //  R_FILE_H

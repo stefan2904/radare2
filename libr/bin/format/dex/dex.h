@@ -4,6 +4,7 @@
 #include <r_bin.h>
 
 #define R_BIN_DEX_MAXSTR 256
+#define DEX_CLASS_SIZE (32)
 
 #pragma pack(4)
 typedef struct dex_header_t {
@@ -52,9 +53,9 @@ typedef struct dex_field_t {
 
 #pragma pack(1)
 typedef struct dex_method_t {
-        ut16 class_id;
-        ut16 proto_id;
-        ut32 name_id;
+	ut16 class_id;
+	ut16 proto_id;
+	ut32 name_id;
 } RBinDexMethod;
 
 #pragma pack(1)
@@ -67,7 +68,16 @@ typedef struct dex_class_t {
 	ut32 anotations_offset;
 	ut32 class_data_offset;
 	ut32 static_values_offset;
+	struct dex_class_data_item_t *class_data;
 } RBinDexClass;
+
+#pragma pack(1)
+typedef struct dex_class_data_item_t {
+	ut64 static_fields_size;
+	ut64 instance_fields_size;
+	ut64 direct_methods_size;
+	ut64 virtual_methods_size;
+} RBinDexClassData;
 
 typedef struct r_bin_dex_obj_t {
 	int size;
@@ -83,8 +93,10 @@ typedef struct r_bin_dex_obj_t {
 	RList *methods_list;
 	RList *imports_list;
 	RList *classes_list;
+	RList *lines_list;
 	ut64 code_from;
 	ut64 code_to;
+	char *version;
 	Sdb *kv;
 } RBinDexObj;
 
@@ -96,10 +108,37 @@ struct r_bin_dex_str_t {
 	int last;
 };
 
+struct dex_encoded_type_addr_pair_t {
+	ut64 type_idx;
+	ut64 addr;
+};
+
+struct dex_encoded_catch_handler_t {
+	st64 size;
+	struct dex_encoded_type_addr_pair_t *handlers;
+	ut64 catch_all_addr;
+};
+
+struct dex_debug_position_t {
+	ut32 source_file_idx;
+	ut64 address;
+	ut64 line;
+};
+
+struct dex_debug_local_t {
+	const char *name;
+	const char *descriptor;
+	const char *signature;
+	ut16 startAddress;
+	bool live;
+	int reg;
+	ut16 endAddress;
+};
+
 char* r_bin_dex_get_version(struct r_bin_dex_obj_t* bin);
 struct r_bin_dex_obj_t *r_bin_dex_new_buf(struct r_buf_t *buf);
 struct r_bin_dex_str_t *r_bin_dex_get_strings (struct r_bin_dex_obj_t* bin);
 
-int dex_read_uleb128 (const ut8 *ptr);
-int dex_read_sleb128 (const char *ptr);
-int dex_uleb128_len (const ut8 *ptr);
+int dex_read_uleb128 (const ut8 *ptr, int size);
+int dex_read_sleb128 (const char *ptr, int size);
+int dex_uleb128_len (const ut8 *ptr, int size);

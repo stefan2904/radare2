@@ -96,20 +96,19 @@ R_API void r_cons_rgb_init (void) {
 
 R_API int r_cons_rgb_parse(const char *p, ut8 *r, ut8 *g, ut8 *b, int *is_bg) {
 	const char *q = 0;
-	int isbg = 0, bold = 255; // 127; // 255 ?
+	int isbg = 0, bold = 127; // 255; // 127; // 255 ?
 	//const double k = (256/6);
 	if (!p) return 0;
 	if (*p == 0x1b) p++;
 	//if (*p!='[') return 0;
 	if (*p != '[') p--;
 	switch (p[1]) {
-	case '1': bold = 255; break;
+	case '1': bold = 255; p += 2; break;
 	case '3': isbg = 0; break;
 	case '4': isbg = 1; break;
 	}
 #define SETRGB(x,y,z) if (r) *r = (x); if (g) *g = (y); if (b) *b = (z)
-	//if (bold != 255 && strchr (p, ';')) {
-	if (strchr (p, ';')) {
+	if (bold != 255 && strchr (p, ';')) {
 		if (p[4] == '5')  {
 			int x, y, z;
 			int n = atoi (p + 6);
@@ -144,7 +143,14 @@ R_API int r_cons_rgb_parse(const char *p, ut8 *r, ut8 *g, ut8 *b, int *is_bg) {
 	return 1;
 }
 
-R_API char *r_cons_rgb_str (char *outstr, ut8 r, ut8 g, ut8 b, int is_bg) {
+R_API char *r_cons_rgb_str_off(char *outstr, ut64 off) {
+	const int r = (off >> 2) & 0xff;
+	const int g = (off >> 6) & 0xff;
+	const int b = (off >> 12) & 0xff;
+	return r_cons_rgb_str (outstr, r, g, b, false);
+}
+
+R_API char *r_cons_rgb_str(char *outstr, ut8 r, ut8 g, ut8 b, int is_bg) {
 	int fgbg = is_bg ? 48: 38;
 	if (!outstr) outstr = malloc (32);
 	if (!outstr) return NULL;
@@ -172,7 +178,11 @@ R_API char *r_cons_rgb_str (char *outstr, ut8 r, ut8 g, ut8 b, int is_bg) {
 
 R_API void r_cons_rgb (ut8 r, ut8 g, ut8 b, int is_bg) {
 #if __WINDOWS__ && !__CYGWIN__
+#ifdef _MSC_VER
+#pragma message ("r_cons_rgb not yet supported on windows")
+#else
 #warning r_cons_rgb not yet supported on windows
+#endif
 #else
 	char outstr[64];
 	r_cons_strcat (r_cons_rgb_str (outstr, r, g, b, is_bg));

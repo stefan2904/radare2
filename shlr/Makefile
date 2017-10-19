@@ -23,28 +23,30 @@ CS_PATCHES=0
 else
 CS_TAR=
 CS_URL=$(GIT_PREFIX)github.com/aquynh/capstone.git
-CS_UPD=20160922
+CS_UPD=20171019
 CS_BRA=next
-CS_TIP=d3155db362dee12c93aa0df59de183250e32d1a1
+CS_TIP=4b2b160ef045da6887e5124314c7ea4a8760e766
 # REVERT THIS COMMIT BECAUSE ITS WRONG
 CS_REV=
 CS_PATCHES=1
 endif
 
-.PHONY: capstone-sync capstone-build all clean mrproper libgdbr libwind bochs
+.PHONY: capstone-sync capstone-build all clean mrproper libgdbr libwindbg bochs
 
 HOST_CC?=gcc
 SHLR?=$(shell pwd)
 AR?=ar
 RANLIB?=ranlib
 MODS=sdb zip udis86 java tcc
+MODS+=gdb qnx ar
+ifneq ($(CC),cccl)
 ifeq (1,$(WITH_GPL))
 MODS+=grub
 endif
-MODS+=gdb
-MODS+=qnx
+endif
 SDB_URL=git://github.com/radare/sdb
 #SDB_URL=/Users/pancake/prg/sdb
+SPP_URL=git://github.com/radare/spp
 PWD=$(shell pwd)
 SDB_CONFIG=${PWD}/sdb-config.mk
 
@@ -56,14 +58,14 @@ all:
 	exit 1
 endif
 
-preall: targets libwind capstone-build bochs
+preall: targets libwindbg capstone-build bochs
 	@for MOD in ${MODS} ; do \
 		echo $(MAKE) -C $$MOD ; \
 		$(MAKE) -C $$MOD HAVE_VALA= ROOT="${PWD}/../" CC="${CC}" ; \
 	done
 
 SDBFILES=sdb/src/.sdb${EXT_EXE} sdb/sdb${EXT_EXE} sdb/src/.sdb sdb/sdb
-PREMODS=capstone gdb wind sdb bochs
+PREMODS=capstone gdb windbg sdb bochs ar
 
 clean mrproper:
 	rm -f ${SDBFILES}
@@ -82,9 +84,14 @@ else
 SDB_TARGETS+=sdb/sdb
 endif
 
+PIC=
+ifneq ($(CC),cccl)
+PIC=-fPIC
 ifeq ($(filter sdb/sdb${BUILD_EXT_EXE},$(SDB_TARGETS)),)
 SDB_TARGETS+=sdb/sdb${BUILD_EXT_EXE}
 endif
+endif
+
 
 targets:
 	for TARGET in ${SDB_TARGETS} ; do ${MAKE} $$TARGET ; done
@@ -106,7 +113,7 @@ ${SDB_TARGETS}:
 	@echo
 	$(MAKE) -C sdb clean
 	$(MAKE) -C sdb src/sdb_version.h
-	$(MAKE) -C sdb/src CC=${HOST_CC} LDFLAGS='${HOST_LDFLAGS}' CPPFLAGS='' CFLAGS='${HOST_CFLAGS} -fPIC' bin
+	$(MAKE) -C sdb/src CC=${HOST_CC} LDFLAGS='${HOST_LDFLAGS}' CPPFLAGS='' CFLAGS='${HOST_CFLAGS} ${PIC}' bin
 	cp -f sdb/src/sdb${BUILD_EXT_EXE} sdb/src/.sdb${BUILD_EXT_EXE}
 	@echo
 	@echo ">>>>>>>>>>>>>>>>"
@@ -116,7 +123,7 @@ ${SDB_TARGETS}:
 	$(MAKE) -C sdb clean
 	cd sdb ; $(MAKE) src/sdb_version.h
 	cd sdb/src ; $(MAKE) ARCH=xxx RANLIB="${RANLIB}" CFLAGS_SHARED="${CFLAGS_SHARED}" \
-		CC="${CC}" AR="${AR}" CFLAGS="${CFLAGS}" LDFLAGS="${LDFLAGS}" libsdb.a
+		CC="${CC}" AR="${AR}" CFLAGS='${CFLAGS}' LDFLAGS='${LDFLAGS}' libsdb.a
 	${RANLIB} sdb/src/libsdb.a
 ifneq (${EXT_AR},a)
 	-cp -f sdb/src/libsdb.a sdb/src/libsdb.${EXT_AR}
@@ -125,15 +132,15 @@ endif
 	cp -f sdb/src/.sdb${BUILD_EXT_EXE} $@
 
 .PHONY: sdb-sync sync-sdb sdbclean
-F=README.md config.mk src Makefile Jamroot
+F=README.md config.mk src Makefile Jamroot meson.build msvc
 SYNCFILES=$(addprefix sdb.vc/,${F})
 I=../libr/include
 
 libgdbr:
 	$(MAKE) -C gdb all
 
-libwind:
-	$(MAKE) -C wind all
+libwindbg:
+	$(MAKE) -C windbg all
 
 bochs:
 	$(MAKE) -C bochs all
@@ -141,7 +148,7 @@ bochs:
 sdb-clean clean-sdb:
 	$(MAKE) -C sdb clean
 	rm -f sdb/sdb.exe
-	rm -f sdb/src/libsdb.a
+	rm -f sdb/src/libsdb.${EXT_AR}
 
 sdb-sync sync-sdb:
 	rm -rf sdb sdb.vc
@@ -161,7 +168,7 @@ sdb-sync sync-sdb:
 	git add $I/sdb*
 	git add sdb
 
-$(TCCLIB) libr_tcc/libr_tcc.a:
+$(TCCLIB) libr_tcc/libr_tcc.${EXT_AR}:
 	cd libr_tcc ; $(MAKE)
 
 udis-sync udis86-sync sync-udis sync-udis86:
@@ -259,24 +266,42 @@ ifneq (${EXT_AR},a)
 	-cp -f capstone/libcapstone.a capstone/libcapstone.${EXT_AR}
 endif
 endif
+../../radare2-webui:
+	cd ../.. ; git clone --depth 1 https://github.com/radare/radare2-webui
 
-www-sync-m:
+../../radare2-webui/dist/m: ../../radare2-webui
+	cd ../../radare2-webui/www/m ; git pull ; npm install ; $(MAKE) release
+
+www-sync-m sync-www-m: ../../radare2-webui/dist/m
 	cp -rf ../../radare2-webui/dist/m www/m.tmp
 	rm -rf www/m
 	mv www/m.tmp www/m
 	git add www/m
 
-www-sync-p:
+www-sync-p sync-www-p:
 	cp -rf ../../radare2-webui/dist/p www/p.tmp
 	rm -rf www/p
 	mv www/p.tmp www/p
 	git add www/p
 
-www-sync-t:
+www-sync-t sync-www-t:
 	cp -rf ../../radare2-webui/dist/t www/t.tmp
 	rm -rf www/t
 	mv www/t.tmp www/t
 	git add www/p
 
-www-sync: www-sync-m www-sync-p www-sync-t
+sync-www www-sync: www-sync-m www-sync-p www-sync-t
 	@echo webui sync done
+
+spp-sync sync-spp:
+	-git rm -r spp
+	rm -rf spp
+	git clone --depth 1 ${SPP_URL} spp
+	rm -rf spp/.git*
+	rm -rf spp/t
+	git add spp
+
+spp: spp-sync
+	CFLAGS="-DHAVE_FORK=${HAVE_FORK} -fPIC" $(MAKE) -C spp
+
+.PHONY: spp

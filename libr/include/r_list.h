@@ -3,8 +3,7 @@
 
 #include <r_types.h>
 #include <r_flist.h>
-#include <ht.h>
-
+#include <sdb.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,10 +24,11 @@ typedef struct r_list_t {
 	RListIter *tail;
 	RListFree free;
 	int length;
+	bool sorted;
 } RList;
 
 typedef struct r_list_range_t {
-	RHashTable64 *h;
+	SdbHash *h;
 	RList *l;
 	//RListComparator c;
 } RListRange;
@@ -46,14 +46,14 @@ typedef struct r_oflist_t {
 //#define R_LIST_NEW(x,y) x=r_list_new();x->free=(RListFree)y
 #define r_list_foreach(list, it, pos)\
 	if (list)\
-		for (it = list->head; it && (pos = it->data); it = it->n)
+		for (it = list->head; it && (pos = it->data, 1); it = it->n)
 /* Safe when calling r_list_delete() while iterating over the list. */
 #define r_list_foreach_safe(list, it, tmp, pos)\
 	if (list)\
-		for (it = list->head; it && (pos = it->data) && ((tmp = it->n) || 1); it = tmp)
+		for (it = list->head; it && (pos = it->data, tmp = it->n, 1); it = tmp)
 #define r_list_foreach_prev(list, it, pos)\
 	if (list)\
-		for (it = list->tail; it && (pos = it->data); it = it->p)
+		for (it = list->tail; it && (pos = it->data, 1); it = it->p)
 #ifndef _R_LIST_C_
 #define r_list_push(x, y) r_list_append (x, y)
 #define r_list_iterator(x) (x)? (x)->head: NULL

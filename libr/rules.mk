@@ -7,7 +7,7 @@ _INCLUDE_RULES_MK_=
 ifeq ($(DEBUG),1)
 export NOSTRIP=1
 CFLAGS+=-g
-LINK+=-g -ggdb
+LINK+=-g
 endif
 
 LIBR:=$(abspath $(dir $(lastword $(MAKEFILE_LIST))))
@@ -20,6 +20,7 @@ endif
 endif
 
 ALL?=
+CFLAGS+=-I$(LIBR)
 CFLAGS+=-I$(LIBR)/include
 LINK+=$(addprefix -L../,$(subst r_,,$(BINDEPS)))
 LINK+=$(addprefix -l,$(BINDEPS))
@@ -76,7 +77,7 @@ $(LIBSO): $(EXTRA_TARGETS) ${WFD} ${OBJS} ${SHARED_OBJ}
 	  if [ $$do = 1 ]; then \
 	    [ -n "${SILENT}" ] && \
 	    echo "LD $(LIBSO)" || \
-	    echo "${CC_LIB} ${LIBNAME} ${OBJS} ${SHARED_OBJ} ${LINK} ${LDFLAGS}" ; \
+	    echo "\"${CC_LIB} ${LIBNAME} ${OBJS} ${SHARED_OBJ} ${LINK} ${LDFLAGS}\"" ; \
 	    ${CC_LIB} ${LIBNAME} ${CFLAGS} ${OBJS} ${SHARED_OBJ} ${LINK} ${LDFLAGS} || exit 1; \
 	    [ -f "$(LIBR)/stripsyms.sh" ] && sh $(LIBR)/stripsyms.sh ${LIBSO} ${NAME} ; \
 	  break ; \
